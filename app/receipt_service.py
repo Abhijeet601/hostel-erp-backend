@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from xhtml2pdf import pisa
 
 from app import models
+from app.config import get_settings
 
 
 RECEIPT_DIR = Path(__file__).resolve().parents[1] / "generated" / "receipts"
@@ -39,7 +40,7 @@ def receipt_public_url(receipt: models.PaymentReceipt) -> str:
 
 
 def verification_url(receipt_number: str) -> str:
-    return f"http://127.0.0.1:8000/receipts/verify/{receipt_number}"
+    return f"{get_settings().base_url}/receipts/verify/{receipt_number}"
 
 
 def safe(value: object | None) -> str:

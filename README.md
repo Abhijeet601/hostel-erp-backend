@@ -93,3 +93,31 @@ Then use Admin Login on `student/login.html`. Student login and registration cre
 - `GET /receipts/{receipt_id}`
 - `GET /receipts/{receipt_id}/download`
 - `GET /receipts/verify/{receipt_number}`
+
+## Railway deployment
+
+Railway runs the API with:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+Use the MySQL service variables in the backend service. The app accepts `DATABASE_URL`, `MYSQL_URL`, or `MYSQL_PUBLIC_URL`; Railway's `mysql://...` values are converted automatically to SQLAlchemy's `mysql+pymysql://...` driver URL.
+
+For the deployed backend service, prefer Railway's internal database URL:
+
+```text
+MYSQL_URL=mysql://root:<password>@mysql.railway.internal:3306/railway
+```
+
+For local development from your PC, use the public proxy URL instead:
+
+```text
+DATABASE_URL=mysql+pymysql://root:<password>@reseau.proxy.rlwy.net:35994/railway
+```
+
+The service health check is:
+
+```text
+/health
+```

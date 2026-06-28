@@ -19,6 +19,7 @@ app = FastAPI(title=settings.app_name, debug=settings.debug)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.allowed_origin_regex or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -352,7 +353,7 @@ def download_receipt(receipt_id: int, db: Session = Depends(get_db)):
     receipt = crud.get_receipt(db, receipt_id)
     if not receipt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt not found.")
-    path = Path(receipt_service.RECEIPT_DIR) / f"{receipt.receipt_number}.pdf"
+    path = receipt_service.receipt_pdf_path(receipt.receipt_number)
     if not path.exists():
         if not receipt.payment:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt PDF not found.")

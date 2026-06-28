@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,6 +12,9 @@ def normalize_mysql_url(value: str) -> str:
     return database_url
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
 class Settings(BaseSettings):
     app_name: str = Field("MMC Hostel ERP API", validation_alias="APP_NAME")
     debug: bool = Field(False, validation_alias="APP_DEBUG")
@@ -19,9 +23,15 @@ class Settings(BaseSettings):
     mysql_public_url: str = Field("", validation_alias="MYSQL_PUBLIC_URL")
     public_base_url: str = Field("", validation_alias="PUBLIC_BASE_URL")
     railway_public_domain: str = Field("", validation_alias="RAILWAY_PUBLIC_DOMAIN")
+    hostel_erp_data_dir: str = Field("mmc-uploads/hostel erp data", validation_alias="HOSTEL_ERP_DATA_DIR")
+    hostel_erp_receipt_dir: str = Field("", validation_alias="HOSTEL_ERP_RECEIPT_DIR")
     allowed_origins: str = Field(
-        "http://localhost:5500,http://127.0.0.1:5500,http://localhost:8000",
+        "null,http://localhost:3000,http://127.0.0.1:3000,http://localhost:5500,http://127.0.0.1:5500,http://localhost:8000,http://127.0.0.1:8000",
         validation_alias="ALLOWED_ORIGINS",
+    )
+    allowed_origin_regex: str = Field(
+        r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$|^https://.*\.up\.railway\.app$",
+        validation_alias="ALLOWED_ORIGIN_REGEX",
     )
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -44,6 +54,22 @@ class Settings(BaseSettings):
         if self.railway_public_domain:
             return f"https://{self.railway_public_domain.strip('/')}"
         return "http://127.0.0.1:8000"
+
+    def resolve_storage_path(self, value: str) -> Path:
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        return PROJECT_ROOT / path
+
+    @property
+    def data_dir_path(self) -> Path:
+        return self.resolve_storage_path(self.hostel_erp_data_dir)
+
+    @property
+    def receipt_dir_path(self) -> Path:
+        if self.hostel_erp_receipt_dir:
+            return self.resolve_storage_path(self.hostel_erp_receipt_dir)
+        return self.data_dir_path / "receipts"
 
 
 @lru_cache

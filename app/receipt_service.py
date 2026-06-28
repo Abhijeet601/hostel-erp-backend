@@ -15,7 +15,6 @@ from app import models
 from app.config import get_settings
 
 
-RECEIPT_DIR = Path(__file__).resolve().parents[1] / "generated" / "receipts"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOGO_PATH = PROJECT_ROOT / "Magadh_Mahila_College.png"
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "receipts"
@@ -37,6 +36,14 @@ CATEGORY_NAMES = {
 
 def receipt_public_url(receipt: models.PaymentReceipt) -> str:
     return f"/receipts/{receipt.id}/download"
+
+
+def receipt_dir() -> Path:
+    return get_settings().receipt_dir_path
+
+
+def receipt_pdf_path(receipt_number: str) -> Path:
+    return receipt_dir() / f"{receipt_number}.pdf"
 
 
 def verification_url(receipt_number: str) -> str:
@@ -244,7 +251,7 @@ def generate_receipt_pdf(
 
     receipt.qr_code = verification_url(receipt.receipt_number)
     receipt.pdf_url = receipt_public_url(receipt)
-    path = RECEIPT_DIR / f"{receipt.receipt_number}.pdf"
+    path = receipt_pdf_path(receipt.receipt_number)
     if receipt_type == "hostel_admission":
         render_html_pdf("hostel_payment_receipt.html", hostel_context(receipt, payment), path)
     else:

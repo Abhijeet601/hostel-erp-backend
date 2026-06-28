@@ -1,0 +1,10 @@
+SET FOREIGN_KEY_CHECKS = 0;
+
+TRUNCATE TABLE payment_receipts;
+TRUNCATE TABLE payments;
+TRUNCATE TABLE hostel_applications;
+TRUNCATE TABLE rooms;
+TRUNCATE TABLE hostels;
+TRUNCATE TABLE students;
+
+SET FOREIGN_KEY_CHECKS = 1;

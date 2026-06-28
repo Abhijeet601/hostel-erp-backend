@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4 portrait; margin: 5mm 8mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 9px; line-height: 1.22; }
+  .sheet { border: 1.2px solid #111; padding: 3mm; }
+  .header-table { width: 100%; height: 23mm; border-collapse: collapse; border-bottom: 1px solid #333; table-layout: fixed; }
+  .logo-cell { width: 28mm; vertical-align: middle; text-align: center; }
+  .logo { width: 21mm; height: 21mm; }
+  .heading-cell { vertical-align: middle; text-align: center; }
+  .meta-cell { width: 38mm; vertical-align: top; text-align: right; font-size: 7px; padding-top: 1mm; }
+  .college { margin: 0; font-family: Georgia, 'Times New Roman', serif; font-size: 25px; line-height: 1; font-weight: bold; letter-spacing: .2px; }
+  .university { margin-top: 2px; font-size: 10px; font-weight: bold; }
+  .accreditation { font-size: 9px; font-weight: bold; }
+  .title { border: 1px solid #111; text-align: center; font-size: 11px; font-weight: bold; padding: 1.3mm; margin: 2mm 0; }
+  .content-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .details { width: 139mm; vertical-align: top; padding: 0; }
+  .field-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .field-table td { padding: .55mm .7mm; vertical-align: top; }
+  .field-table .label { width: 49mm; font-weight: bold; }
+  .field-table .colon { width: 4mm; text-align: center; font-weight: bold; }
+  .field-table .value { width: auto; overflow-wrap: break-word; }
+  .section-row td { padding-top: 1.5mm; border-top: .6px solid #999; }
+  .section-label { font-size: 9.5px; font-weight: bold; text-transform: uppercase; }
+  .side { width: 34mm; vertical-align: top; text-align: center; padding: 4mm 0 0 2mm; }
+  .photo-box { width: 32mm; height: 42mm; border: 1px solid #111; margin: 0 auto 4mm; overflow: hidden; }
+  .photo { width: 32mm; height: 42mm; }
+  .photo-placeholder { padding-top: 18mm; color: #666; font-size: 8px; }
+  .qr { width: 29mm; height: 29mm; }
+  .qr-label { font-size: 6.5px; margin-top: 1mm; }
+  .payment { margin-top: 1.5mm; border-top: 1px solid #555; padding-top: 1mm; }
+  .payment .value { font-weight: bold; }
+  .signature { margin-top: 1mm; width: 100%; }
+  .signature td { width: 50%; height: 6mm; vertical-align: bottom; }
+  .signature .right { text-align: right; }
+  .signature-line { display: inline-block; width: 43mm; border-top: 1px solid #111; padding-top: 1mm; text-align: center; }
+  .instructions { border-top: 1px solid #111; margin-top: 1mm; padding-top: 1mm; font-size: 6.4px; line-height: 1.05; }
+  .instructions strong { font-size: 8px; }
+  .instructions ol { margin: .5mm 0 0 4mm; padding: 0; }
+  .system-note { margin-top: .8mm; text-align: center; font-size: 6.4px; font-weight: bold; }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <table class="header-table"><tr>
+    <td class="logo-cell"><img class="logo" src="{{ logo_data }}" alt="College logo"></td>
+    <td class="heading-cell"><div class="college">Magadh Mahila College</div><div class="university">Patna University, Patna</div><div class="accreditation">NAAC Accredited B+ Grade College</div></td>
+    <td class="meta-cell">Receipt No.: {{ receipt_number }}<br>Generated: {{ generated_at }}</td>
+  </tr></table>
+  <div class="title">ONLINE HOSTEL APPLICATION PAYMENT RECEIPT</div>
+  <table class="content-table"><tr>
+    <td class="details">
+      <table class="field-table">
+      {% for label, value in applicant_fields %}
+        <tr><td class="label">{{ label }}</td><td class="colon">:</td><td class="value">{{ value }}</td></tr>
+      {% endfor %}
+        <tr class="section-row"><td colspan="3"><span class="section-label">Academic Information</span></td></tr>
+      {% for label, value in academic_fields %}
+        <tr><td class="label">{{ label }}</td><td class="colon">:</td><td class="value">{{ value }}</td></tr>
+      {% endfor %}
+      </table>
+      <div class="payment">
+        <table class="field-table">
+        {% for label, value in payment_fields %}
+          <tr><td class="label">{{ label }}</td><td class="colon">:</td><td class="value">{{ value }}</td></tr>
+        {% endfor %}
+        </table>
+      </div>
+    </td>
+    <td class="side">
+      <div class="photo-box">{% if photo_data %}<img class="photo" src="{{ photo_data }}" alt="Student photograph">{% else %}<div class="photo-placeholder">STUDENT<br>PHOTOGRAPH</div>{% endif %}</div>
+      <img class="qr" src="{{ qr_data }}" alt="Verification QR">
+      <div class="qr-label">Scan to verify receipt</div>
+    </td>
+  </tr></table>
+  <table class="signature"><tr><td>Date: {{ payment_date_only }}</td><td class="right"><span class="signature-line">Applicant's Signature</span></td></tr></table>
+  <div class="instructions"><strong>Important Instructions</strong><ol><li>Keep this receipt safely for application verification and hostel admission.</li><li>Payment is subject to verification against the transaction shown above.</li><li>Produce this receipt whenever requested by the college or hostel office.</li></ol></div>
+  <div class="system-note">SYSTEM GENERATED RECEIPT - VALID WITHOUT A COMPUTER-GENERATED SIGNATURE</div>
+</div>
+</body>
+</html>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
@@ -13,6 +14,9 @@ from xhtml2pdf import pisa
 
 from app import models
 from app.config import get_settings
+from app.r2_storage import get_r2_service
+
+logger = logging.getLogger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -214,14 +218,54 @@ def hostel_context(receipt: models.PaymentReceipt, payment: models.Payment) -> d
     return context
 
 
-def render_html_pdf(template_name: str, context: dict, path: Path) -> None:
+def render_html_pdf_to_bytes(template_name: str, context: dict) -> bytes:
+    """Render an HTML template to PDF bytes in memory."""
     html = templates.get_template(template_name).render(**context)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as output:
-        result = pisa.CreatePDF(html, dest=output, encoding="utf-8")
+    buffer = BytesIO()
+    result = pisa.CreatePDF(html, dest=buffer, encoding="utf-8")
     if result.err:
-        path.unlink(missing_ok=True)
         raise RuntimeError(f"Receipt PDF rendering failed with {result.err} error(s).")
+    return buffer.getvalue()
+
+
+def render_html_pdf(template_name: str, context: dict, path: Path) -> None:
+    """Render an HTML template to PDF and save to disk (legacy fallback)."""
+    pdf_bytes = render_html_pdf_to_bytes(template_name, context)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(pdf_bytes)
+
+
+def upload_receipt_to_r2(receipt_number: str, pdf_bytes: bytes) -> str:
+    """Upload receipt PDF to Cloudflare R2 and return the public URL."""
+    r2 = get_r2_service()
+    if not r2.enabled:
+        return ""
+    key = r2.receipt_key(receipt_number)
+    try:
+        url = r2.upload_bytes(pdf_bytes, key, content_type="application/pdf")
+        logger.info("Receipt %s uploaded to R2: %s", receipt_number, url)
+        return url
+    except Exception:
+        logger.exception("Failed to upload receipt %s to R2", receipt_number)
+        return ""
+
+
+def get_receipt_pdf_bytes(receipt_number: str) -> bytes | None:
+    """Try to get receipt PDF bytes — from R2 first, then local disk."""
+    r2 = get_r2_service()
+    if r2.enabled:
+        key = r2.receipt_key(receipt_number)
+        try:
+            return r2.download_file(key)
+        except FileNotFoundError:
+            logger.debug("Receipt %s not found in R2, checking local.", receipt_number)
+        except Exception:
+            logger.exception("Failed to download receipt %s from R2", receipt_number)
+
+    local_path = receipt_pdf_path(receipt_number)
+    if local_path.exists():
+        return local_path.read_bytes()
+    return None
 
 
 def generate_receipt_pdf(
@@ -250,12 +294,29 @@ def generate_receipt_pdf(
         db.flush()
 
     receipt.qr_code = verification_url(receipt.receipt_number)
-    receipt.pdf_url = receipt_public_url(receipt)
-    path = receipt_pdf_path(receipt.receipt_number)
-    if receipt_type == "hostel_admission":
-        render_html_pdf("hostel_payment_receipt.html", hostel_context(receipt, payment), path)
+
+    # Render PDF to bytes
+    template_name = (
+        "hostel_payment_receipt.html" if receipt_type == "hostel_admission"
+        else "registration_receipt.html"
+    )
+    context = (
+        hostel_context(receipt, payment) if receipt_type == "hostel_admission"
+        else registration_context(receipt, payment)
+    )
+    pdf_bytes = render_html_pdf_to_bytes(template_name, context)
+
+    # Upload to R2 if available
+    r2_url = upload_receipt_to_r2(receipt.receipt_number, pdf_bytes)
+    if r2_url:
+        receipt.pdf_url = r2_url
     else:
-        render_html_pdf("registration_receipt.html", registration_context(receipt, payment), path)
+        # Fallback: save locally and use API download URL
+        local_path = receipt_pdf_path(receipt.receipt_number)
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(pdf_bytes)
+        receipt.pdf_url = receipt_public_url(receipt)
+
     db.commit()
     db.refresh(receipt)
     return receipt

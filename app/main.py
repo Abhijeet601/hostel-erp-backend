@@ -1,15 +1,17 @@
 from pathlib import Path
 from decimal import Decimal
+from io import BytesIO
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import crud, models, receipt_service, schemas
 from app.config import get_settings
 from app.database import Base, engine, get_db
+from app.r2_storage import get_r2_service
 
 
 settings = get_settings()
@@ -353,13 +355,105 @@ def download_receipt(receipt_id: int, db: Session = Depends(get_db)):
     receipt = crud.get_receipt(db, receipt_id)
     if not receipt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt not found.")
+
+    # If the receipt has an R2 public URL, redirect to it
+    if receipt.pdf_url and receipt.pdf_url.startswith("http"):
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=receipt.pdf_url, status_code=307)
+
+    # Try to get PDF bytes from R2 or local storage
+    pdf_bytes = receipt_service.get_receipt_pdf_bytes(receipt.receipt_number)
+    if pdf_bytes:
+        return StreamingResponse(
+            BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{receipt.receipt_number}.pdf"'},
+        )
+
+    # Last resort: regenerate the receipt
+    if not receipt.payment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt PDF not found.")
+    updated_receipt = receipt_service.generate_receipt_pdf(db, receipt.payment, receipt.receipt_type)
+    if updated_receipt.pdf_url and updated_receipt.pdf_url.startswith("http"):
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=updated_receipt.pdf_url, status_code=307)
+
+    # Fallback to local file
     path = receipt_service.receipt_pdf_path(receipt.receipt_number)
     if not path.exists():
-        if not receipt.payment:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt PDF not found.")
-        receipt_service.generate_receipt_pdf(db, receipt.payment, receipt.receipt_type)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt PDF not found.")
     return FileResponse(
         path,
         media_type="application/pdf",
         filename=f"{receipt.receipt_number}.pdf",
     )
+
+
+@app.post("/upload/photo", response_model=schemas.FileUploadResponse)
+async def upload_photo(file: UploadFile, student_id: int):
+    """Upload a student photo to Cloudflare R2."""
+    r2 = get_r2_service()
+    if not r2.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="File storage is not configured.",
+        )
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only image files are allowed.",
+        )
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:  # 5 MB limit
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File size exceeds 5 MB limit.",
+        )
+    key = r2.photo_key(student_id, file.filename or "photo.jpg")
+    url = r2.upload_bytes(content, key, content_type=file.content_type)
+    return schemas.FileUploadResponse(
+        url=url, key=key, content_type=file.content_type, size=len(content)
+    )
+
+
+@app.post("/upload/document", response_model=schemas.FileUploadResponse)
+async def upload_document(file: UploadFile, category: str = "general"):
+    """Upload a document (PDF, image, etc.) to Cloudflare R2."""
+    r2 = get_r2_service()
+    if not r2.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="File storage is not configured.",
+        )
+    allowed_types = {
+        "application/pdf", "image/jpeg", "image/png", "image/webp",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    if file.content_type and file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File type '{file.content_type}' is not allowed.",
+        )
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:  # 10 MB limit
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File size exceeds 10 MB limit.",
+        )
+    key = r2.document_key(category, file.filename or "document")
+    url = r2.upload_bytes(content, key, content_type=file.content_type or "application/octet-stream")
+    return schemas.FileUploadResponse(
+        url=url, key=key, content_type=file.content_type or "application/octet-stream", size=len(content)
+    )
+
+
+@app.get("/storage/status")
+def storage_status():
+    """Check if R2 cloud storage is configured and available."""
+    r2 = get_r2_service()
+    return {
+        "r2_enabled": r2.enabled,
+        "r2_public_url": settings.r2_public_base_url or None,
+        "local_fallback": True,
+    }

@@ -33,8 +33,14 @@ class Settings(BaseSettings):
         r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$|^https://.*\.up\.railway\.app$",
         validation_alias="ALLOWED_ORIGIN_REGEX",
     )
+    r2_account_id: str = Field("", validation_alias="R2_ACCOUNT_ID")
+    r2_access_key_id: str = Field("", validation_alias="R2_ACCESS_KEY_ID")
+    r2_secret_access_key: str = Field("", validation_alias="R2_SECRET_ACCESS_KEY")
+    r2_bucket_name: str = Field("mmc-erp-files", validation_alias="R2_BUCKET_NAME")
+    r2_public_url: str = Field("", validation_alias="R2_PUBLIC_URL")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
 
     @property
     def cors_origins(self) -> list[str]:
@@ -70,6 +76,23 @@ class Settings(BaseSettings):
         if self.hostel_erp_receipt_dir:
             return self.resolve_storage_path(self.hostel_erp_receipt_dir)
         return self.data_dir_path / "receipts"
+
+    @property
+    def r2_endpoint_url(self) -> str:
+        if self.r2_account_id:
+            return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
+        return ""
+
+    @property
+    def r2_enabled(self) -> bool:
+        return bool(self.r2_account_id and self.r2_access_key_id and self.r2_secret_access_key)
+
+    @property
+    def r2_public_base_url(self) -> str:
+        if self.r2_public_url:
+            return self.r2_public_url.rstrip("/")
+        return ""
+
 
 
 @lru_cache

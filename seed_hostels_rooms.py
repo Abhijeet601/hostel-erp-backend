@@ -13,28 +13,28 @@ def mahima_rooms() -> list[dict[str, object]]:
     rooms = []
     for floor in range(1, 8):
         for room in range(1, 25):
-            for suffix in ("A", "B", "C"):
-                rooms.append(
-                    {
-                        "room_number": f"{floor}{room:02d}{suffix}",
-                        "floor": floor,
-                        "building": "Mahima",
-                    }
-                )
+            rooms.append(
+                {
+                    "room_number": f"{floor}{room:02d}",
+                    "floor": floor,
+                    "building": "Mahima",
+                    "beds": 3,
+                }
+            )
     return rooms
 
 
 def vaidehi_rooms() -> list[dict[str, object]]:
     rooms = []
     for room in range(1, 54):
-        for suffix in ("A", "B", "C"):
-            rooms.append(
-                {
-                    "room_number": f"{room}{suffix}",
-                    "floor": 1,
-                    "building": "Vaidehi",
-                }
-            )
+        rooms.append(
+            {
+                "room_number": f"{room}",
+                "floor": 1,
+                "building": "Vaidehi",
+                "beds": 3,
+            }
+        )
     return rooms
 
 
@@ -66,7 +66,7 @@ def upsert_rooms(conn, hostel_id: int, rooms: list[dict[str, object]]) -> None:
     statement = text(
         """
             INSERT INTO rooms (hostel_id, room_number, floor, building, beds, status)
-            VALUES (:hostel_id, :room_number, :floor, :building, 1, 'available')
+            VALUES (:hostel_id, :room_number, :floor, :building, :beds, 'available')
             ON DUPLICATE KEY UPDATE
               floor = VALUES(floor),
               building = VALUES(building),

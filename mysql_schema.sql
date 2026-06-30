@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS hostel_applications (
   student_id INT NOT NULL,
   application_type VARCHAR(30) NOT NULL DEFAULT 'new',
   admission_level VARCHAR(2) NULL,
-  admission_id VARCHAR(50) NOT NULL,
+  admission_id VARCHAR(50) NULL,
   college_name VARCHAR(160) NULL,
   course VARCHAR(80) NULL,
   session VARCHAR(20) NULL,
@@ -67,9 +67,13 @@ CREATE TABLE IF NOT EXISTS hostel_applications (
   percentage DECIMAL(5,2) NULL,
   roll_number VARCHAR(50) NULL,
   subject VARCHAR(80) NULL,
-  applied_category VARCHAR(20) NOT NULL,
+  applied_category VARCHAR(20) NULL,
   allotted_category VARCHAR(20) NULL,
-  status VARCHAR(30) NOT NULL DEFAULT 'Pending',
+  status VARCHAR(30) NOT NULL DEFAULT 'Draft',
+  application_status VARCHAR(30) NOT NULL DEFAULT 'Draft',
+  current_step INT NOT NULL DEFAULT 1,
+  last_saved_at DATETIME NULL,
+  submitted_at DATETIME NULL,
   merit_rank INT NULL,
   hostel_id INT NULL,
   room_id INT NULL,
@@ -78,6 +82,16 @@ CREATE TABLE IF NOT EXISTS hostel_applications (
   CONSTRAINT fk_applications_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
   CONSTRAINT fk_applications_hostel FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE SET NULL,
   CONSTRAINT fk_applications_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS admission_payment_settings (
+  id INT PRIMARY KEY,
+  admission_start_date DATE NULL,
+  admission_end_date DATE NULL,
+  payment_start_date DATE NULL,
+  payment_end_date DATE NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS payments (

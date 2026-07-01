@@ -762,3 +762,8 @@ def storage_status():
         "r2_public_url": settings.r2_public_base_url or None,
         "local_fallback": True,
     }
+
+
+from app.frontend_api import router as frontend_router
+
+app.include_router(frontend_router)

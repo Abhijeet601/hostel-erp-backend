@@ -37,6 +37,7 @@ class FrontendLoginRequest(BaseModel):
 
 
 class FrontendAdminLoginRequest(BaseModel):
+    identifier: str | None = Field(None, max_length=160)
     email: str | None = None
     username: str | None = None
     password: str = Field(..., min_length=1, max_length=128)
@@ -427,9 +428,8 @@ def list_admin_rooms(db: Session) -> dict[str, list[dict[str, Any]]]:
     return {"items": items}
 
 
-def resolve_login_identifier(payload: FrontendLoginRequest) -> str:
-    identifier = payload.identifier or payload.email or payload.username or ""
-    return identifier.strip()
+def resolve_login_identifier(payload: FrontendLoginRequest | FrontendAdminLoginRequest) -> str:
+    return (payload.identifier or payload.email or payload.username or "").strip()
 
 
 def login_student_or_admin(payload: FrontendLoginRequest, db: Session) -> dict[str, Any]:
@@ -589,7 +589,7 @@ def frontend_login(payload: FrontendLoginRequest, db: Session = Depends(get_db))
 @router.post("/api/admin/login")
 @router.post("/api/auth/admin/login")
 def frontend_admin_login(payload: FrontendAdminLoginRequest, db: Session = Depends(get_db)):
-    identifier = (payload.username or payload.email or "").strip()
+    identifier = (payload.identifier or payload.username or payload.email or "").strip()
     return login_student_or_admin(
         FrontendLoginRequest(identifier=identifier, password=payload.password, role="admin"),
         db,

@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class StudentBase(BaseModel):
@@ -278,13 +278,27 @@ class AdminRead(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    identifier: str = Field(..., min_length=3, max_length=160)
+    identifier: str | None = Field(None, max_length=160)
+    email: str | None = Field(None, max_length=160)
+    username: str | None = Field(None, max_length=160)
     password: str = Field(..., min_length=1, max_length=128)
     role: str = "auto"
+
+    @model_validator(mode="after")
+    def ensure_identifier(self) -> "LoginRequest":
+        if not self.identifier:
+            self.identifier = (self.email or self.username or "").strip()
+        if not self.identifier or len(self.identifier) < 3:
+            raise ValueError("Email, username, or student identifier is required.")
+        return self
 
 
 class LoginResponse(BaseModel):
     role: str
+    access_token: str | None = None
+    token: str | None = None
+    application_completed: bool | None = None
+    application_number: str | None = None
     user: AdminRead | StudentRead
 
 

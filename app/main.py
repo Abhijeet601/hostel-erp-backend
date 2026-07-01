@@ -234,43 +234,20 @@ def list_admins(db: Session = Depends(get_db)):
     return crud.list_admins(db)
 
 
-@app.post("/auth/login", response_model=schemas.LoginResponse)
+@app.post("/auth/login")
 def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
-    if payload.role == "auto":
-        student = crud.authenticate_student(db, payload.identifier, payload.password)
-        if student:
-            return {"role": "student", "user": student}
-        admin = crud.authenticate_admin(db, payload.identifier, payload.password)
-        if admin:
-            return {"role": "admin", "user": admin}
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid login credentials.")
-    if payload.role == "admin":
-        admin = crud.authenticate_admin(db, payload.identifier, payload.password)
-        if not admin:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials.")
-        return {"role": "admin", "user": admin}
-    if payload.role == "student":
-        student = crud.authenticate_student(db, payload.identifier, payload.password)
-        if not student:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid student credentials.")
-        return {"role": "student", "user": student}
-    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported login role.")
+    from app.frontend_api import FrontendLoginRequest, login_student_or_admin
 
-
-@app.post("/api/login", response_model=schemas.LoginResponse)
-def api_login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
-    return login(payload, db)
-
-
-@app.post("/api/admin/login", response_model=schemas.LoginResponse)
-def api_admin_login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
-    payload = payload.model_copy(update={"role": "admin"})
-    return login(payload, db)
-
-
-@app.post("/api/auth/login", response_model=schemas.LoginResponse)
-def api_auth_login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
-    return login(payload, db)
+    return login_student_or_admin(
+        FrontendLoginRequest(
+            identifier=payload.identifier,
+            email=payload.email,
+            username=payload.username,
+            password=payload.password,
+            role=payload.role,
+        ),
+        db,
+    )
 
 
 @app.post("/students", response_model=schemas.StudentRead, status_code=status.HTTP_201_CREATED)

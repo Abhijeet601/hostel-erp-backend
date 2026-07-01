@@ -45,7 +45,7 @@ def seed_default_admin() -> None:
     from app.schemas import AdminCreate
 
     with SessionLocal() as db:
-        if crud.list_admins(db):
+        if crud.get_admin_by_identifier(db, "admin"):
             return
 
         default_admin = AdminCreate(

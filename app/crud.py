@@ -453,12 +453,21 @@ def list_admins(db: Session) -> list[models.AdminUser]:
     return list(db.scalars(select(models.AdminUser).order_by(models.AdminUser.username)))
 
 
-def authenticate_admin(db: Session, identifier: str, password: str) -> models.AdminUser | None:
-    stmt = select(models.AdminUser).where(
-        or_(models.AdminUser.username == identifier, models.AdminUser.email == identifier),
-        models.AdminUser.is_active.is_(True),
+def get_admin_by_identifier(db: Session, identifier: str) -> models.AdminUser | None:
+    normalized = identifier.strip()
+    if not normalized:
+        return None
+    return db.scalar(
+        select(models.AdminUser).where(
+            or_(models.AdminUser.username == normalized, models.AdminUser.email == normalized)
+        )
     )
-    admin = db.scalar(stmt)
+
+
+def authenticate_admin(db: Session, identifier: str, password: str) -> models.AdminUser | None:
+    admin = get_admin_by_identifier(db, identifier)
+    if admin and not admin.is_active:
+        return None
     if not admin or not verify_password(password, admin.password_hash):
         return None
     return admin

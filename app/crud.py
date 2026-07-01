@@ -454,12 +454,17 @@ def list_admins(db: Session) -> list[models.AdminUser]:
 
 
 def get_admin_by_identifier(db: Session, identifier: str) -> models.AdminUser | None:
-    normalized = identifier.strip()
+    normalized = identifier.strip().lower()
     if not normalized:
         return None
+    if normalized == "admin@hostel.erp":
+        normalized = "admin"
     return db.scalar(
         select(models.AdminUser).where(
-            or_(models.AdminUser.username == normalized, models.AdminUser.email == normalized)
+            or_(
+                func.lower(models.AdminUser.username) == normalized,
+                func.lower(models.AdminUser.email) == normalized,
+            )
         )
     )
 

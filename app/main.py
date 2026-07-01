@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
+import logging
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,8 +13,11 @@ from sqlalchemy.orm import Session
 
 from app import crud, models, receipt_service, schemas
 from app.config import get_settings
-from app.database import Base, engine, get_db
+from app.database import Base, engine, SessionLocal, get_db
 from app.r2_storage import get_r2_service
+
+
+logger = logging.getLogger(__name__)
 
 
 settings = get_settings()
@@ -34,6 +38,29 @@ app.add_middleware(
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_schema_updates()
+    seed_default_admin()
+
+
+def seed_default_admin() -> None:
+    from app.schemas import AdminCreate
+
+    with SessionLocal() as db:
+        if crud.list_admins(db):
+            return
+
+        default_admin = AdminCreate(
+            username='admin',
+            email='admin@hostel.erp',
+            password='admin123',
+            full_name='Default Admin',
+            role='super_admin',
+            is_active=True,
+        )
+        try:
+            crud.create_admin(db, default_admin)
+            logger.info('Default admin user created: admin / admin123')
+        except Exception as exc:
+            logger.warning(f'Unable to create default admin: {exc}')
 
 
 def ensure_schema_updates() -> None:
@@ -228,6 +255,22 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid student credentials.")
         return {"role": "student", "user": student}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported login role.")
+
+
+@app.post("/api/login", response_model=schemas.LoginResponse)
+def api_login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
+    return login(payload, db)
+
+
+@app.post("/api/admin/login", response_model=schemas.LoginResponse)
+def api_admin_login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
+    payload = payload.model_copy(update={"role": "admin"})
+    return login(payload, db)
+
+
+@app.post("/api/auth/login", response_model=schemas.LoginResponse)
+def api_auth_login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
+    return login(payload, db)
 
 
 @app.post("/students", response_model=schemas.StudentRead, status_code=status.HTTP_201_CREATED)

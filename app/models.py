@@ -83,7 +83,7 @@ class HostelApplication(Base):
     aadhar_number: Mapped[str | None] = mapped_column(String(12))
     religion: Mapped[str | None] = mapped_column(String(60))
     nationality: Mapped[str | None] = mapped_column(String(60))
-    student_photo_data: Mapped[str | None] = mapped_column(Text)
+    student_photo_url: Mapped[str | None] = mapped_column(String(500))
     intermediate_college: Mapped[str | None] = mapped_column(String(160))
     board: Mapped[str | None] = mapped_column(String(50))
     previous_course: Mapped[str | None] = mapped_column(String(80))
@@ -176,3 +176,4 @@ class AdmissionPaymentSettings(Base):
     payment_end_date: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+

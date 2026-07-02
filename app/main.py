@@ -1,12 +1,10 @@
 from pathlib import Path
-from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -33,46 +31,6 @@ app.add_middleware(
 @app.on_event("startup")
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
-    ensure_schema_updates()
-
-
-def ensure_schema_updates() -> None:
-    if engine.dialect.name != "mysql":
-        return
-    required_columns = {
-        "application_status": "VARCHAR(30) NOT NULL DEFAULT 'Draft'",
-        "current_step": "INT NOT NULL DEFAULT 1",
-        "last_saved_at": "DATETIME NULL",
-        "submitted_at": "DATETIME NULL",
-    }
-    with engine.begin() as conn:
-        existing = {
-            row[0]
-            for row in conn.execute(
-                text(
-                    """
-                    SELECT COLUMN_NAME
-                    FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_SCHEMA = DATABASE()
-                      AND TABLE_NAME = 'hostel_applications'
-                    """
-                )
-            )
-        }
-        for column, ddl in required_columns.items():
-            if column not in existing:
-                conn.execute(text(f"ALTER TABLE hostel_applications ADD COLUMN {column} {ddl}"))
-        conn.execute(text("ALTER TABLE hostel_applications MODIFY admission_id VARCHAR(50) NULL"))
-        conn.execute(text("ALTER TABLE hostel_applications MODIFY applied_category VARCHAR(20) NULL"))
-        conn.execute(
-            text(
-                """
-                UPDATE hostel_applications
-                SET application_status = COALESCE(NULLIF(application_status, ''), status, 'Draft'),
-                    current_step = CASE WHEN current_step IS NULL OR current_step < 1 THEN 8 ELSE current_step END
-                """
-            )
-        )
 
 
 @app.get("/health")
@@ -88,113 +46,6 @@ def save_or_409(action):
             status_code=status.HTTP_409_CONFLICT,
             detail="Duplicate or invalid related record.",
         ) from exc
-
-
-def settings_response(settings_model: models.AdmissionPaymentSettings) -> schemas.ApplicationSettingsRead:
-    today = date.today()
-
-    def state(start: date | None, end: date | None, kind: str) -> tuple[str, str | None]:
-        if start and today < start:
-            return "not_started", f"{kind} has not started yet."
-        if end and today > end:
-            return "closed", f"{kind} is Closed." if kind == "Hostel Admission" else "Payment deadline has expired."
-        return "open", None
-
-    admission_state, admission_message = state(
-        settings_model.admission_start_date,
-        settings_model.admission_end_date,
-        "Hostel Admission",
-    )
-    payment_state, payment_message = state(
-        settings_model.payment_start_date,
-        settings_model.payment_end_date,
-        "Payment",
-    )
-    return schemas.ApplicationSettingsRead(
-        admission_start_date=settings_model.admission_start_date,
-        admission_end_date=settings_model.admission_end_date,
-        payment_start_date=settings_model.payment_start_date,
-        payment_end_date=settings_model.payment_end_date,
-        admission_state=admission_state,
-        payment_state=payment_state,
-        admission_message=admission_message,
-        payment_message=payment_message,
-    )
-
-
-def require_admission_open(db: Session, existing_draft: bool = False) -> None:
-    if existing_draft:
-        return
-    settings_model = crud.get_application_settings(db)
-    settings_data = settings_response(settings_model)
-    if settings_data.admission_state == "not_started":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hostel Admission has not started yet.")
-    if settings_data.admission_state == "closed":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hostel Admission is Closed.")
-
-
-def require_payment_open(db: Session) -> None:
-    settings_model = crud.get_application_settings(db)
-    settings_data = settings_response(settings_model)
-    if settings_data.payment_state == "not_started":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Payment has not started yet.")
-    if settings_data.payment_state == "closed":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Payment deadline has expired.")
-
-
-def parse_date_value(value):
-    if not value or isinstance(value, date):
-        return value
-    return date.fromisoformat(str(value))
-
-
-def normalize_application_data(data: dict) -> dict:
-    normalized = dict(data or {})
-    if "date_of_birth" in normalized:
-        normalized["date_of_birth"] = parse_date_value(normalized["date_of_birth"])
-    for key in ("marks_obtained", "total_marks", "percentage"):
-        if normalized.get(key) in ("", None):
-            normalized[key] = None
-        elif key in normalized:
-            normalized[key] = Decimal(str(normalized[key]))
-    for key, value in list(normalized.items()):
-        if value == "":
-            normalized[key] = None
-    return normalized
-
-
-STEP_REQUIRED_FIELDS = {
-    1: ["application_type"],
-    2: ["name", "gender", "date_of_birth", "mobile", "email", "aadhar_number", "applied_category"],
-    3: ["admission_level", "admission_id", "college_name", "course", "subject", "session", "roll_number"],
-    4: ["intermediate_college", "board", "previous_course", "total_marks", "marks_obtained", "result_type", "percentage"],
-    5: ["father_name", "mother_name"],
-    6: ["permanent_address", "correspondence_address"],
-    7: ["student_photo_data"],
-    8: [],
-}
-
-
-def validate_step_payload(step: int, data: dict) -> None:
-    missing = [field for field in STEP_REQUIRED_FIELDS.get(step, []) if data.get(field) in (None, "")]
-    if missing:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Missing required field(s) for step {step}: {', '.join(missing)}",
-        )
-    mobile = data.get("mobile")
-    if mobile and (not str(mobile).isdigit() or len(str(mobile)) != 10):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Mobile number must be 10 digits.")
-    guardian_mobile = data.get("guardian_mobile")
-    if guardian_mobile and (not str(guardian_mobile).isdigit() or len(str(guardian_mobile)) != 10):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Guardian mobile must be 10 digits.")
-    aadhar = data.get("aadhar_number")
-    if aadhar and (not str(aadhar).isdigit() or len(str(aadhar)) != 12):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Aadhar number must be 12 digits.")
-    total = data.get("total_marks")
-    marks = data.get("marks_obtained")
-    if total is not None and marks is not None and Decimal(str(marks)) > Decimal(str(total)):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Marks obtained cannot exceed total marks.")
 
 
 @app.post("/admins", response_model=schemas.AdminRead, status_code=status.HTTP_201_CREATED)
@@ -313,81 +164,12 @@ def update_room(room_id: int, payload: schemas.RoomUpdate, db: Session = Depends
 def create_application(payload: schemas.ApplicationCreate, db: Session = Depends(get_db)):
     if not crud.get_student(db, payload.student_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
-    require_admission_open(db)
-    data = normalize_application_data(payload.model_dump())
-    for step in range(1, 8):
-        validate_step_payload(step, data)
     if crud.get_student_application_for_session(db, payload.student_id, payload.session):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A hostel application already exists for this session.",
         )
     return save_or_409(lambda: crud.create_application(db, payload))
-
-
-@app.post("/applications/validate-step")
-def validate_application_step(payload: schemas.ApplicationDraftValidate) -> dict[str, str]:
-    data = normalize_application_data(payload.data)
-    validate_step_payload(payload.step, data)
-    return {"status": "ok"}
-
-
-@app.post("/applications/draft", response_model=schemas.ApplicationRead)
-def save_application_draft(payload: schemas.ApplicationDraftSave, db: Session = Depends(get_db)):
-    student = crud.get_student(db, payload.student_id)
-    if not student:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
-    existing_draft = crud.get_editable_student_application(db, student.id)
-    existing_latest = crud.get_latest_student_application(db, student.id)
-    if existing_latest and existing_latest.application_status != "Draft" and not existing_draft:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A hostel application already exists for this student.",
-        )
-    require_admission_open(db, existing_draft=bool(existing_draft))
-    data = normalize_application_data(payload.data)
-    validate_step_payload(payload.current_step, data)
-    session_value = data.get("session")
-    if session_value:
-        duplicate = crud.get_student_application_for_session(db, student.id, session_value)
-        if duplicate and duplicate.application_status != "Draft" and (not existing_draft or duplicate.id != existing_draft.id):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="A hostel application already exists for this session.",
-            )
-    return save_or_409(lambda: crud.save_application_draft(db, student, payload.current_step, data))
-
-
-@app.get("/applications/resume/{student_id}", response_model=schemas.ApplicationRead | None)
-def resume_application(student_id: int, db: Session = Depends(get_db)):
-    if not crud.get_student(db, student_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
-    return crud.get_latest_student_application(db, student_id)
-
-
-@app.post("/applications/{application_id}/submit", response_model=schemas.ApplicationRead)
-def submit_application(application_id: int, payload: schemas.ApplicationDraftSave, db: Session = Depends(get_db)):
-    application = crud.get_application(db, application_id)
-    if not application:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
-    if application.student_id != payload.student_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Application does not belong to this student.")
-    if application.application_status != "Draft":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only draft applications can be submitted.")
-    require_admission_open(db, existing_draft=False)
-    data = normalize_application_data(payload.data)
-    merged = {field: getattr(application, field, None) for field in crud.APPLICATION_DRAFT_FIELDS}
-    merged.update(data)
-    merged.update({
-        "name": application.student.name,
-        "email": application.student.email,
-        "mobile": application.student.mobile,
-        "date_of_birth": application.student.date_of_birth,
-        "gender": application.student.gender,
-    })
-    for step in range(1, 8):
-        validate_step_payload(step, merged)
-    return save_or_409(lambda: crud.submit_application(db, application, data))
 
 
 @app.get("/applications", response_model=list[schemas.ApplicationRead])
@@ -417,48 +199,6 @@ def update_application_status(
     if not application:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
     return save_or_409(lambda: crud.update_application_status(db, application, payload))
-
-
-@app.get("/settings/application", response_model=schemas.ApplicationSettingsRead)
-def get_application_settings(db: Session = Depends(get_db)):
-    return settings_response(crud.get_application_settings(db))
-
-
-@app.put("/settings/application", response_model=schemas.ApplicationSettingsRead)
-def update_application_settings(payload: schemas.ApplicationSettingsUpdate, db: Session = Depends(get_db)):
-    if payload.admission_start_date and payload.admission_end_date and payload.admission_start_date > payload.admission_end_date:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Admission start date cannot be after last date.")
-    if payload.payment_start_date and payload.payment_end_date and payload.payment_start_date > payload.payment_end_date:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Payment start date cannot be after last date.")
-    return settings_response(crud.update_application_settings(db, payload))
-
-
-@app.get("/admin/dashboard-metrics", response_model=schemas.AdminDashboardMetrics)
-def admin_dashboard_metrics(db: Session = Depends(get_db)):
-    settings_model = crud.get_application_settings(db)
-    settings_data = settings_response(settings_model)
-    counts = crud.count_applications_by_status(db)
-    today = date.today()
-
-    def countdown(end_date: date | None) -> str | None:
-        if not end_date:
-            return None
-        days = (end_date - today).days
-        if days < 0:
-            return "Closed"
-        if days == 0:
-            return "Closes today"
-        return f"{days} day{'s' if days != 1 else ''} left"
-
-    return schemas.AdminDashboardMetrics(
-        settings=settings_data,
-        countdown_to_admission_closing=countdown(settings_model.admission_end_date),
-        countdown_to_payment_closing=countdown(settings_model.payment_end_date),
-        total_draft_applications=counts.get("Draft", 0),
-        total_submitted_applications=counts.get("Submitted", 0),
-        total_approved_applications=counts.get("Approved", 0) + counts.get("Selected", 0),
-        total_rejected_applications=counts.get("Rejected", 0),
-    )
 
 
 @app.post("/payments", response_model=schemas.PaymentRead, status_code=status.HTTP_201_CREATED)
@@ -493,7 +233,6 @@ def require_payment_application(payload: schemas.PaymentCreate, db: Session):
     status_code=status.HTTP_201_CREATED,
 )
 def registration_payment_success(payload: schemas.PaymentCreate, db: Session = Depends(get_db)):
-    require_payment_open(db)
     require_successful_payment(payload)
     application = require_payment_application(payload, db)
     if crud.get_successful_payment_for_application(db, application.id, "Registration Fee"):
@@ -518,7 +257,6 @@ def registration_payment_success(payload: schemas.PaymentCreate, db: Session = D
     status_code=status.HTTP_201_CREATED,
 )
 def hostel_payment_success(payload: schemas.PaymentCreate, db: Session = Depends(get_db)):
-    require_payment_open(db)
     require_successful_payment(payload)
     application = require_payment_application(payload, db)
     if crud.get_successful_payment_for_application(db, application.id, "Hostel Admission Fee"):

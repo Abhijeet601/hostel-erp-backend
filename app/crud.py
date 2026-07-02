@@ -1,9 +1,9 @@
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app import models, schemas
@@ -168,22 +168,11 @@ def update_room(db: Session, room: models.Room, payload: schemas.RoomUpdate) -> 
 
 
 def create_application(db: Session, payload: schemas.ApplicationCreate) -> models.HostelApplication:
-    values = payload.model_dump()
-    values.setdefault("status", "Submitted")
-    values.setdefault("application_status", values["status"])
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    values.setdefault("submitted_at", now)
-    values.setdefault("last_saved_at", now)
-    values.setdefault("current_step", 8)
-    application = models.HostelApplication(**values)
+    application = models.HostelApplication(**payload.model_dump())
     db.add(application)
     db.commit()
     db.refresh(application)
     return application
-
-
-def generate_application_no(student_id: int) -> str:
-    return f"MMC-HST-{datetime.now().year}-{student_id}-{datetime.now().strftime('%H%M%S%f')[-8:]}"
 
 
 def list_applications(
@@ -218,120 +207,6 @@ def get_student_application_for_session(
     )
 
 
-def get_editable_student_application(db: Session, student_id: int) -> models.HostelApplication | None:
-    return db.scalar(
-        select(models.HostelApplication)
-        .where(
-            models.HostelApplication.student_id == student_id,
-            models.HostelApplication.application_status == "Draft",
-        )
-        .order_by(models.HostelApplication.updated_at.desc(), models.HostelApplication.id.desc())
-        .limit(1)
-    )
-
-
-def get_latest_student_application(db: Session, student_id: int) -> models.HostelApplication | None:
-    return db.scalar(
-        select(models.HostelApplication)
-        .where(models.HostelApplication.student_id == student_id)
-        .order_by(models.HostelApplication.updated_at.desc(), models.HostelApplication.id.desc())
-        .limit(1)
-    )
-
-
-APPLICATION_DRAFT_FIELDS = {
-    "application_type",
-    "admission_level",
-    "admission_id",
-    "college_name",
-    "course",
-    "session",
-    "father_name",
-    "mother_name",
-    "guardian_name",
-    "guardian_mobile",
-    "permanent_address",
-    "correspondence_address",
-    "blood_group",
-    "aadhar_number",
-    "religion",
-    "nationality",
-    "student_photo_data",
-    "intermediate_college",
-    "board",
-    "previous_course",
-    "result_type",
-    "marks_obtained",
-    "total_marks",
-    "percentage",
-    "roll_number",
-    "subject",
-    "applied_category",
-    "allotted_category",
-    "hostel_id",
-    "room_id",
-}
-
-STUDENT_DRAFT_FIELDS = {
-    "name",
-    "email",
-    "mobile",
-    "date_of_birth",
-    "gender",
-    "category",
-    "course",
-    "session",
-}
-
-
-def save_application_draft(
-    db: Session,
-    student: models.Student,
-    current_step: int,
-    data: dict,
-) -> models.HostelApplication:
-    application = get_editable_student_application(db, student.id)
-    if not application:
-        application = models.HostelApplication(
-            application_no=generate_application_no(student.id),
-            student_id=student.id,
-            status="Draft",
-            application_status="Draft",
-            current_step=current_step,
-        )
-        db.add(application)
-
-    for key, value in data.items():
-        if key in APPLICATION_DRAFT_FIELDS:
-            setattr(application, key, value)
-        if key in STUDENT_DRAFT_FIELDS:
-            setattr(student, key, value)
-
-    application.current_step = max(application.current_step or 1, current_step)
-    application.status = "Draft"
-    application.application_status = "Draft"
-    application.last_saved_at = datetime.now(timezone.utc).replace(tzinfo=None)
-    db.commit()
-    db.refresh(application)
-    return application
-
-
-def submit_application(db: Session, application: models.HostelApplication, data: dict | None = None) -> models.HostelApplication:
-    if data:
-        for key, value in data.items():
-            if key in APPLICATION_DRAFT_FIELDS:
-                setattr(application, key, value)
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    application.current_step = 8
-    application.status = "Submitted"
-    application.application_status = "Submitted"
-    application.last_saved_at = now
-    application.submitted_at = now
-    db.commit()
-    db.refresh(application)
-    return application
-
-
 def update_application_status(
     db: Session,
     application: models.HostelApplication,
@@ -340,8 +215,6 @@ def update_application_status(
     old_room_id = application.room_id
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(application, key, value)
-        if key == "status":
-            application.application_status = value
     if old_room_id and old_room_id != application.room_id:
         old_room = db.get(models.Room, old_room_id)
         if old_room:
@@ -353,37 +226,6 @@ def update_application_status(
     db.commit()
     db.refresh(application)
     return application
-
-
-def get_application_settings(db: Session) -> models.AdmissionPaymentSettings:
-    settings = db.get(models.AdmissionPaymentSettings, 1)
-    if settings:
-        return settings
-    settings = models.AdmissionPaymentSettings(id=1)
-    db.add(settings)
-    db.commit()
-    db.refresh(settings)
-    return settings
-
-
-def update_application_settings(
-    db: Session,
-    payload: schemas.ApplicationSettingsUpdate,
-) -> models.AdmissionPaymentSettings:
-    settings = get_application_settings(db)
-    for key, value in payload.model_dump().items():
-        setattr(settings, key, value)
-    db.commit()
-    db.refresh(settings)
-    return settings
-
-
-def count_applications_by_status(db: Session) -> dict[str, int]:
-    rows = db.execute(
-        select(models.HostelApplication.application_status, func.count(models.HostelApplication.id))
-        .group_by(models.HostelApplication.application_status)
-    ).all()
-    return {str(status or "Draft"): int(count) for status, count in rows}
 
 
 def create_payment(db: Session, payload: schemas.PaymentCreate) -> models.Payment:
@@ -453,26 +295,12 @@ def list_admins(db: Session) -> list[models.AdminUser]:
     return list(db.scalars(select(models.AdminUser).order_by(models.AdminUser.username)))
 
 
-def get_admin_by_identifier(db: Session, identifier: str) -> models.AdminUser | None:
-    normalized = identifier.strip().lower()
-    if not normalized:
-        return None
-    if normalized == "admin@hostel.erp":
-        normalized = "admin"
-    return db.scalar(
-        select(models.AdminUser).where(
-            or_(
-                func.lower(models.AdminUser.username) == normalized,
-                func.lower(models.AdminUser.email) == normalized,
-            )
-        )
-    )
-
-
 def authenticate_admin(db: Session, identifier: str, password: str) -> models.AdminUser | None:
-    admin = get_admin_by_identifier(db, identifier)
-    if admin and not admin.is_active:
-        return None
+    stmt = select(models.AdminUser).where(
+        or_(models.AdminUser.username == identifier, models.AdminUser.email == identifier),
+        models.AdminUser.is_active.is_(True),
+    )
+    admin = db.scalar(stmt)
     if not admin or not verify_password(password, admin.password_hash):
         return None
     return admin

@@ -240,16 +240,3 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     role: str
     user: AdminRead | StudentRead
-
-
-class FileUploadResponse(BaseModel):
-    url: str
-    key: str
-    content_type: str
-    size: int
-
-
-class ReceiptDownloadInfo(BaseModel):
-    receipt_number: str
-    pdf_url: str | None
-    download_url: str

@@ -87,7 +87,9 @@ class RoomBase(BaseModel):
     room_number: str
     floor: int
     building: str | None = None
-    beds: int = 1
+    beds: int = 3
+    occupied_beds: int = 0
+    available_beds: int = 3
     status: str = "available"
 
 
@@ -99,6 +101,8 @@ class RoomUpdate(BaseModel):
     status: Literal["available", "occupied", "reserved", "maintenance"] | None = None
     beds: int | None = None
     building: str | None = None
+    occupied_beds: int | None = None
+    available_beds: int | None = None
 
 
 class RoomRead(RoomBase):
@@ -142,10 +146,25 @@ class ApplicationBase(BaseModel):
     allotted_category: Literal["UR", "BC", "EBC", "EWS", "SC", "ST"] | None = None
     hostel_id: int | None = None
     room_id: int | None = None
+    block: str | None = None
+    floor: str | None = None
+    bed: str | None = None
+    allocation_date: date | None = None
+    allocation_status: str | None = None
 
 
 class ApplicationCreate(ApplicationBase):
     application_no: str
+
+
+class AllocationRequest(BaseModel):
+    room_id: int
+    bed: str
+    hostel_id: int | None = None
+    block: str | None = None
+    floor: str | None = None
+    allocation_date: date | None = None
+    allocation_status: str | None = "allocated"
 
 
 class ApplicationStatusUpdate(BaseModel):
@@ -154,6 +173,11 @@ class ApplicationStatusUpdate(BaseModel):
     merit_rank: int | None = None
     hostel_id: int | None = None
     room_id: int | None = None
+    block: str | None = None
+    floor: str | None = None
+    bed: str | None = None
+    allocation_date: date | None = None
+    allocation_status: str | None = None
 
 
 class ApplicationRead(ApplicationBase):
@@ -208,6 +232,16 @@ class AdminDashboardMetrics(BaseModel):
     total_submitted_applications: int
     total_approved_applications: int
     total_rejected_applications: int
+    total_rooms: int = 0
+    occupied_rooms: int = 0
+    available_rooms: int = 0
+    total_beds: int = 0
+    occupied_beds: int = 0
+    available_beds: int = 0
+    hostel_occupancy_pct: float = 0.0
+    recent_allocations: list[dict[str, Any]] = []
+    recent_vacated_beds: list[dict[str, Any]] = []
+    room_status_summary: dict[str, int] = {}
 
 
 class PaymentBase(BaseModel):

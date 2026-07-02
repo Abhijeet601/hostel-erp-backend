@@ -54,7 +54,9 @@ class Room(Base):
     room_number: Mapped[str] = mapped_column(String(20), index=True)
     floor: Mapped[int] = mapped_column()
     building: Mapped[str | None] = mapped_column(String(80))
-    beds: Mapped[int] = mapped_column(default=1)
+    beds: Mapped[int] = mapped_column(default=3)
+    occupied_beds: Mapped[int] = mapped_column(default=0)
+    available_beds: Mapped[int] = mapped_column(default=3)
     status: Mapped[str] = mapped_column(String(30), default="available")
 
     hostel: Mapped[Hostel] = relationship(back_populates="rooms")
@@ -103,6 +105,11 @@ class HostelApplication(Base):
     merit_rank: Mapped[int | None] = mapped_column()
     hostel_id: Mapped[int | None] = mapped_column(ForeignKey("hostels.id", ondelete="SET NULL"))
     room_id: Mapped[int | None] = mapped_column(ForeignKey("rooms.id", ondelete="SET NULL"))
+    block: Mapped[str | None] = mapped_column(String(40))
+    floor: Mapped[str | None] = mapped_column(String(20))
+    bed: Mapped[str | None] = mapped_column(String(20))
+    allocation_date: Mapped[date | None] = mapped_column(Date)
+    allocation_status: Mapped[str] = mapped_column(String(30), default="allocated")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -3,6 +3,7 @@ import hmac
 import secrets
 from datetime import datetime, timezone
 
+from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -140,8 +141,28 @@ def update_hostel(db: Session, hostel: models.Hostel, payload: schemas.HostelUpd
     return hostel
 
 
+def normalize_bed_value(value: str | None) -> str | None:
+    if value in (None, ""):
+        return None
+    normalized = str(value).strip().lower().replace("bed ", "")
+    mapping = {"a": "A", "b": "B", "c": "C", "1": "A", "2": "B", "3": "C"}
+    return mapping.get(normalized, normalized.upper())
+
+
+def normalize_allocation_payload(payload: dict | None) -> dict:
+    if not payload:
+        return {}
+    normalized = dict(payload)
+    normalized["bed"] = normalize_bed_value(normalized.get("bed"))
+    if normalized.get("allocation_status") in {None, ""}:
+        normalized["allocation_status"] = "allocated"
+    return normalized
+
+
 def create_room(db: Session, payload: schemas.RoomCreate) -> models.Room:
     room = models.Room(**payload.model_dump())
+    room.available_beds = max(int(room.beds or 0), 0)
+    room.occupied_beds = 0
     db.add(room)
     db.commit()
     db.refresh(room)
@@ -160,10 +181,40 @@ def get_room(db: Session, room_id: int) -> models.Room | None:
 
 
 def update_room(db: Session, room: models.Room, payload: schemas.RoomUpdate) -> models.Room:
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    values = payload.model_dump(exclude_unset=True)
+    for key, value in values.items():
         setattr(room, key, value)
+    if "beds" in values or "occupied_beds" in values or "available_beds" in values:
+        total_beds = max(int(room.beds or 0), 0)
+        occupied_beds = min(int(room.occupied_beds or 0), total_beds)
+        available_beds = max(total_beds - occupied_beds, 0)
+        room.occupied_beds = occupied_beds
+        room.available_beds = available_beds
+    elif room.available_beds is None:
+        room.available_beds = max(int(room.beds or 0), 0)
     db.commit()
     db.refresh(room)
+    return room
+
+
+def sync_room_occupancy(db: Session, room: models.Room) -> models.Room:
+    if not room:
+        return room
+    total_beds = max(int(room.beds or 0), 0)
+    occupied_rows = db.execute(
+        select(models.HostelApplication)
+        .where(
+            models.HostelApplication.room_id == room.id,
+            models.HostelApplication.allocation_status != "vacated",
+            models.HostelApplication.bed.is_not(None),
+            models.HostelApplication.application_status != "Draft",
+        )
+    ).scalars().all()
+    occupied_beds = len(occupied_rows)
+    room.occupied_beds = min(occupied_beds, total_beds)
+    room.available_beds = max(total_beds - room.occupied_beds, 0)
+    if room.status not in {"reserved", "maintenance"}:
+        room.status = "occupied" if room.occupied_beds >= total_beds else "available"
     return room
 
 
@@ -175,6 +226,7 @@ def create_application(db: Session, payload: schemas.ApplicationCreate) -> model
     values.setdefault("submitted_at", now)
     values.setdefault("last_saved_at", now)
     values.setdefault("current_step", 8)
+    values = normalize_allocation_payload(values)
     application = models.HostelApplication(**values)
     db.add(application)
     db.commit()
@@ -270,6 +322,11 @@ APPLICATION_DRAFT_FIELDS = {
     "allotted_category",
     "hostel_id",
     "room_id",
+    "block",
+    "floor",
+    "bed",
+    "allocation_date",
+    "allocation_status",
 }
 
 STUDENT_DRAFT_FIELDS = {
@@ -306,6 +363,7 @@ def save_application_draft(
             setattr(application, key, value)
         if key in STUDENT_DRAFT_FIELDS:
             setattr(student, key, value)
+    application.bed = normalize_bed_value(application.bed)
 
     application.current_step = max(application.current_step or 1, current_step)
     application.status = "Draft"
@@ -321,14 +379,106 @@ def submit_application(db: Session, application: models.HostelApplication, data:
         for key, value in data.items():
             if key in APPLICATION_DRAFT_FIELDS:
                 setattr(application, key, value)
+    application.bed = normalize_bed_value(application.bed)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     application.current_step = 8
     application.status = "Submitted"
     application.application_status = "Submitted"
     application.last_saved_at = now
     application.submitted_at = now
+    if application.room_id and application.bed:
+        assign_application_bed(db, application)
+    else:
+        application.allocation_status = "pending"
     db.commit()
     db.refresh(application)
+    return application
+
+
+def assign_application_bed(
+    db: Session,
+    application: models.HostelApplication,
+    room_id: int | None = None,
+    bed: str | None = None,
+    hostel_id: int | None = None,
+    block: str | None = None,
+    floor: str | None = None,
+    allocation_date: datetime | None = None,
+    allocation_status: str | None = None,
+) -> models.HostelApplication:
+    if room_id is None:
+        room_id = application.room_id
+    if bed is None:
+        bed = application.bed
+    if hostel_id is None:
+        hostel_id = application.hostel_id
+    if block is None:
+        block = application.block
+    if floor is None:
+        floor = application.floor
+    if allocation_date is None:
+        allocation_date = application.allocation_date
+    if allocation_status is None:
+        allocation_status = application.allocation_status or "allocated"
+    if not room_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Room is required for allocation.")
+    if not bed:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Bed is required for allocation.")
+    room = db.get(models.Room, room_id)
+    if not room:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
+    if hostel_id is not None and int(hostel_id) != int(room.hostel_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected room does not belong to the chosen hostel.")
+    normalized_bed = normalize_bed_value(bed)
+    if normalized_bed not in {"A", "B", "C"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Bed must be A, B, or C.")
+    if room.occupied_beds >= max(int(room.beds or 0), 0):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room is fully occupied. Please select another room.")
+
+    existing_conflict = db.scalar(
+        select(models.HostelApplication).where(
+            models.HostelApplication.room_id == room_id,
+            models.HostelApplication.bed == normalized_bed,
+            models.HostelApplication.allocation_status != "vacated",
+            models.HostelApplication.application_status != "Draft",
+            models.HostelApplication.id != application.id,
+        )
+    )
+    if existing_conflict:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Selected bed is already occupied.")
+
+    old_room_id = application.room_id
+    if old_room_id and old_room_id != room_id:
+        old_room = db.get(models.Room, old_room_id)
+        if old_room:
+            sync_room_occupancy(db, old_room)
+    application.hostel_id = hostel_id
+    application.room_id = room_id
+    application.block = block
+    application.floor = floor
+    application.bed = normalized_bed
+    application.allocation_date = allocation_date or application.allocation_date or datetime.now(timezone.utc).date()
+    application.allocation_status = allocation_status or "allocated"
+    sync_room_occupancy(db, room)
+    db.add(room)
+    if old_room_id and old_room_id != room_id:
+        old_room = db.get(models.Room, old_room_id)
+        if old_room:
+            sync_room_occupancy(db, old_room)
+            db.add(old_room)
+    db.add(application)
+    return application
+
+
+def release_application_bed(db: Session, application: models.HostelApplication) -> models.HostelApplication:
+    if application.room_id:
+        room = db.get(models.Room, application.room_id)
+        if room:
+            sync_room_occupancy(db, room)
+            db.add(room)
+    application.bed = None
+    application.allocation_status = "vacated"
+    db.add(application)
     return application
 
 
@@ -337,19 +487,50 @@ def update_application_status(
     application: models.HostelApplication,
     payload: schemas.ApplicationStatusUpdate,
 ) -> models.HostelApplication:
+    data = payload.model_dump(exclude_unset=True)
     old_room_id = application.room_id
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    for key, value in data.items():
         setattr(application, key, value)
         if key == "status":
             application.application_status = value
-    if old_room_id and old_room_id != application.room_id:
+    application.bed = normalize_bed_value(application.bed)
+    if data.get("room_id") or data.get("bed"):
+        if data.get("room_id") and data.get("bed"):
+            assign_application_bed(
+                db,
+                application,
+                room_id=data.get("room_id"),
+                bed=data.get("bed"),
+                hostel_id=data.get("hostel_id"),
+                block=data.get("block"),
+                floor=data.get("floor"),
+                allocation_date=data.get("allocation_date"),
+                allocation_status=data.get("allocation_status"),
+            )
+        elif data.get("room_id") and not data.get("bed") and application.bed:
+            assign_application_bed(
+                db,
+                application,
+                room_id=data.get("room_id"),
+                bed=application.bed,
+                hostel_id=data.get("hostel_id"),
+                block=data.get("block"),
+                floor=data.get("floor"),
+                allocation_date=data.get("allocation_date"),
+                allocation_status=data.get("allocation_status"),
+            )
+    if data.get("allocation_status") == "vacated":
+        release_application_bed(db, application)
+    if old_room_id and old_room_id != application.room_id and not data.get("room_id"):
         old_room = db.get(models.Room, old_room_id)
         if old_room:
-            old_room.status = "available"
-    if application.room_id:
-        new_room = db.get(models.Room, application.room_id)
-        if new_room:
-            new_room.status = "occupied"
+            sync_room_occupancy(db, old_room)
+            db.add(old_room)
+    if application.room_id and not data.get("room_id") and not data.get("bed"):
+        room = db.get(models.Room, application.room_id)
+        if room:
+            sync_room_occupancy(db, room)
+            db.add(room)
     db.commit()
     db.refresh(application)
     return application

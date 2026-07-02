@@ -6,7 +6,7 @@ from io import BytesIO
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -39,14 +39,23 @@ def create_tables() -> None:
 def ensure_schema_updates() -> None:
     if engine.dialect.name != "mysql":
         return
-    required_columns = {
+    required_application_columns = {
         "application_status": "VARCHAR(30) NOT NULL DEFAULT 'Draft'",
         "current_step": "INT NOT NULL DEFAULT 1",
         "last_saved_at": "DATETIME NULL",
         "submitted_at": "DATETIME NULL",
+        "block": "VARCHAR(40) NULL",
+        "floor": "VARCHAR(20) NULL",
+        "bed": "VARCHAR(20) NULL",
+        "allocation_date": "DATE NULL",
+        "allocation_status": "VARCHAR(30) NOT NULL DEFAULT 'allocated'",
+    }
+    required_room_columns = {
+        "occupied_beds": "INT NOT NULL DEFAULT 0",
+        "available_beds": "INT NOT NULL DEFAULT 3",
     }
     with engine.begin() as conn:
-        existing = {
+        application_columns = {
             row[0]
             for row in conn.execute(
                 text(
@@ -59,9 +68,25 @@ def ensure_schema_updates() -> None:
                 )
             )
         }
-        for column, ddl in required_columns.items():
-            if column not in existing:
+        room_columns = {
+            row[0]
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT COLUMN_NAME
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'rooms'
+                    """
+                )
+            )
+        }
+        for column, ddl in required_application_columns.items():
+            if column not in application_columns:
                 conn.execute(text(f"ALTER TABLE hostel_applications ADD COLUMN {column} {ddl}"))
+        for column, ddl in required_room_columns.items():
+            if column not in room_columns:
+                conn.execute(text(f"ALTER TABLE rooms ADD COLUMN {column} {ddl}"))
         conn.execute(text("ALTER TABLE hostel_applications MODIFY admission_id VARCHAR(50) NULL"))
         conn.execute(text("ALTER TABLE hostel_applications MODIFY applied_category VARCHAR(20) NULL"))
         conn.execute(
@@ -69,7 +94,17 @@ def ensure_schema_updates() -> None:
                 """
                 UPDATE hostel_applications
                 SET application_status = COALESCE(NULLIF(application_status, ''), status, 'Draft'),
-                    current_step = CASE WHEN current_step IS NULL OR current_step < 1 THEN 8 ELSE current_step END
+                    current_step = CASE WHEN current_step IS NULL OR current_step < 1 THEN 8 ELSE current_step END,
+                    allocation_status = COALESCE(NULLIF(allocation_status, ''), 'allocated')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE rooms
+                SET occupied_beds = COALESCE(occupied_beds, 0),
+                    available_beds = COALESCE(available_beds, GREATEST(COALESCE(beds, 3), 0))
                 """
             )
         )
@@ -301,6 +336,92 @@ def list_rooms(hostel_id: int | None = None, db: Session = Depends(get_db)):
     return crud.list_rooms(db, hostel_id=hostel_id)
 
 
+@app.get("/rooms/{room_id}/beds")
+def get_room_bed_inventory(room_id: int, db: Session = Depends(get_db)):
+    room = crud.get_room(db, room_id)
+    if not room:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
+    crud.sync_room_occupancy(db, room)
+    occupied_applications = list(
+        db.scalars(
+            select(models.HostelApplication).where(
+                models.HostelApplication.room_id == room.id,
+                models.HostelApplication.allocation_status != "vacated",
+                models.HostelApplication.bed.is_not(None),
+                models.HostelApplication.application_status != "Draft",
+            )
+        )
+    )
+    occupied_bed_names = {app.bed for app in occupied_applications if app.bed}
+    bed_labels = ["A", "B", "C"]
+    available_beds = [bed for bed in bed_labels if bed not in occupied_bed_names]
+    occupied_beds = [bed for bed in bed_labels if bed in occupied_bed_names]
+    return {
+        "room_id": room.id,
+        "room_number": room.room_number,
+        "total_beds": max(int(room.beds or 0), 0),
+        "occupied_beds": len(occupied_beds),
+        "available_beds": len(available_beds),
+        "remaining_beds": len(available_beds),
+        "occupied_bed_numbers": occupied_beds,
+        "available_bed_numbers": available_beds,
+        "status": "full" if not available_beds else ("available" if len(available_beds) > 0 else "full"),
+    }
+
+
+@app.post("/applications/{application_id}/allocate-bed")
+def assign_bed_to_application(application_id: int, payload: schemas.AllocationRequest, db: Session = Depends(get_db)):
+    application = crud.get_application(db, application_id)
+    if not application:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
+    crud.assign_application_bed(
+        db,
+        application,
+        room_id=payload.room_id,
+        bed=payload.bed,
+        hostel_id=payload.hostel_id,
+        block=payload.block,
+        floor=payload.floor,
+        allocation_date=payload.allocation_date,
+        allocation_status=payload.allocation_status,
+    )
+    db.commit()
+    db.refresh(application)
+    return {"message": "Bed assigned successfully.", "application": application}
+
+
+@app.post("/applications/{application_id}/transfer")
+def transfer_application_bed(application_id: int, payload: schemas.AllocationRequest, db: Session = Depends(get_db)):
+    application = crud.get_application(db, application_id)
+    if not application:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
+    crud.assign_application_bed(
+        db,
+        application,
+        room_id=payload.room_id,
+        bed=payload.bed,
+        hostel_id=payload.hostel_id,
+        block=payload.block,
+        floor=payload.floor,
+        allocation_date=payload.allocation_date,
+        allocation_status=payload.allocation_status,
+    )
+    db.commit()
+    db.refresh(application)
+    return {"message": "Student transferred successfully.", "application": application}
+
+
+@app.post("/applications/{application_id}/checkout")
+def checkout_application_bed(application_id: int, db: Session = Depends(get_db)):
+    application = crud.get_application(db, application_id)
+    if not application:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
+    crud.release_application_bed(db, application)
+    db.commit()
+    db.refresh(application)
+    return {"message": "Bed released successfully.", "application": application}
+
+
 @app.patch("/rooms/{room_id}", response_model=schemas.RoomRead)
 def update_room(room_id: int, payload: schemas.RoomUpdate, db: Session = Depends(get_db)):
     room = crud.get_room(db, room_id)
@@ -450,6 +571,46 @@ def admin_dashboard_metrics(db: Session = Depends(get_db)):
             return "Closes today"
         return f"{days} day{'s' if days != 1 else ''} left"
 
+    rooms = crud.list_rooms(db)
+    room_status_summary = {status: 0 for status in ["available", "occupied", "reserved", "maintenance"]}
+    for room in rooms:
+        room_status_summary[room.status] = room_status_summary.get(room.status, 0) + 1
+    total_rooms = len(rooms)
+    occupied_rooms = sum(1 for room in rooms if room.status == "occupied")
+    available_rooms = sum(1 for room in rooms if room.status == "available")
+    total_beds = sum(max(int(room.beds or 0), 0) for room in rooms)
+    occupied_beds = sum(max(int(room.occupied_beds or 0), 0) for room in rooms)
+    available_beds = max(total_beds - occupied_beds, 0)
+    hostel_occupancy_pct = round((occupied_beds / total_beds * 100) if total_beds else 0.0, 1)
+    recent_allocations = []
+    for application in sorted(
+        [app for app in crud.list_applications(db) if app.room_id and app.bed and app.allocation_status != "vacated"],
+        key=lambda item: item.updated_at or item.created_at,
+        reverse=True,
+    )[:8]:
+        recent_allocations.append(
+            {
+                "application_no": application.application_no,
+                "student_name": application.student.name if application.student else None,
+                "room_number": application.room.room_number if application.room else None,
+                "bed": application.bed,
+                "allocation_date": application.allocation_date.isoformat() if application.allocation_date else None,
+            }
+        )
+    recent_vacated_beds = []
+    for application in sorted(
+        [app for app in crud.list_applications(db) if app.allocation_status == "vacated"],
+        key=lambda item: item.updated_at or item.created_at,
+        reverse=True,
+    )[:8]:
+        recent_vacated_beds.append(
+            {
+                "application_no": application.application_no,
+                "student_name": application.student.name if application.student else None,
+                "room_number": application.room.room_number if application.room else None,
+                "bed": application.bed,
+            }
+        )
     return schemas.AdminDashboardMetrics(
         settings=settings_data,
         countdown_to_admission_closing=countdown(settings_model.admission_end_date),
@@ -458,6 +619,16 @@ def admin_dashboard_metrics(db: Session = Depends(get_db)):
         total_submitted_applications=counts.get("Submitted", 0),
         total_approved_applications=counts.get("Approved", 0) + counts.get("Selected", 0),
         total_rejected_applications=counts.get("Rejected", 0),
+        total_rooms=total_rooms,
+        occupied_rooms=occupied_rooms,
+        available_rooms=available_rooms,
+        total_beds=total_beds,
+        occupied_beds=occupied_beds,
+        available_beds=available_beds,
+        hostel_occupancy_pct=hostel_occupancy_pct,
+        recent_allocations=recent_allocations,
+        recent_vacated_beds=recent_vacated_beds,
+        room_status_summary=room_status_summary,
     )
 
 

@@ -56,9 +56,15 @@ def upsert_hostel(conn, hostel: dict[str, object]) -> int:
 
 
 def upsert_rooms(conn, hostel_id: int, rooms: list[dict[str, object]]) -> None:
-    conn.execute(
-        text(
-            """
+    existing_count = conn.execute(
+        text("SELECT COUNT(*) FROM rooms WHERE hostel_id = :hostel_id"),
+        {"hostel_id": hostel_id},
+    ).scalar_one()
+    if existing_count == len(rooms):
+        return
+
+    statement = text(
+        """
             INSERT INTO rooms (hostel_id, room_number, floor, building, beds, status)
             VALUES (:hostel_id, :room_number, :floor, :building, 1, 'available')
             ON DUPLICATE KEY UPDATE
@@ -67,30 +73,38 @@ def upsert_rooms(conn, hostel_id: int, rooms: list[dict[str, object]]) -> None:
               beds = VALUES(beds),
               status = VALUES(status)
             """
-        ),
-        [{"hostel_id": hostel_id, **room} for room in rooms],
     )
+    rows = [{"hostel_id": hostel_id, **room} for room in rooms]
+    for start in range(0, len(rows), 50):
+        conn.execute(statement, rows[start : start + 50])
 
 
 def main() -> None:
-    engine = create_engine(get_settings().database_url)
-    with engine.begin() as conn:
-        hostel_ids = {hostel["name"]: upsert_hostel(conn, hostel) for hostel in HOSTELS}
-        upsert_rooms(conn, hostel_ids["Mahima"], mahima_rooms())
-        upsert_rooms(conn, hostel_ids["Vaidehi"], vaidehi_rooms())
+    engine = create_engine(
+        get_settings().sqlalchemy_database_url,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": 10, "read_timeout": 10, "write_timeout": 10},
+    )
+    try:
+        with engine.begin() as conn:
+            hostel_ids = {hostel["name"]: upsert_hostel(conn, hostel) for hostel in HOSTELS}
+            upsert_rooms(conn, hostel_ids["Mahima"], mahima_rooms())
+            upsert_rooms(conn, hostel_ids["Vaidehi"], vaidehi_rooms())
 
-        counts = conn.execute(
-            text(
-                """
-                SELECT h.name, COUNT(r.id) AS rooms
-                FROM hostels h
-                LEFT JOIN rooms r ON r.hostel_id = h.id
-                WHERE h.name IN ('Mahima', 'Vaidehi')
-                GROUP BY h.id, h.name
-                ORDER BY h.name
-                """
-            )
-        ).all()
+            counts = conn.execute(
+                text(
+                    """
+                    SELECT h.name, COUNT(r.id) AS rooms
+                    FROM hostels h
+                    LEFT JOIN rooms r ON r.hostel_id = h.id
+                    WHERE h.name IN ('Mahima', 'Vaidehi')
+                    GROUP BY h.id, h.name
+                    ORDER BY h.name
+                    """
+                )
+            ).all()
+    finally:
+        engine.dispose()
 
     for name, room_count in counts:
         print(f"{name}: {room_count} rooms")

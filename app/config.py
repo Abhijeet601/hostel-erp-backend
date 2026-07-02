@@ -21,8 +21,6 @@ FIRST_PARTY_ORIGIN_REGEX = (
     r"^https://(www\.)?magadhmahilacollege\.org$"
     r"|^https://[^/]+\.vercel\.app$"
     r"|^https://[^/]+\.netlify\.app$"
-    r"|^https://[^/]+\.pages\.dev$"
-    r"|^https://[^/]+\.github\.io$"
 )
 
 
@@ -34,10 +32,6 @@ class Settings(BaseSettings):
     mysql_public_url: str = Field("", validation_alias="MYSQL_PUBLIC_URL")
     public_base_url: str = Field("", validation_alias="PUBLIC_BASE_URL")
     railway_public_domain: str = Field("", validation_alias="RAILWAY_PUBLIC_DOMAIN")
-    railway_environment: str = Field("", validation_alias="RAILWAY_ENVIRONMENT")
-    railway_environment_name: str = Field("", validation_alias="RAILWAY_ENVIRONMENT_NAME")
-    railway_project_id: str = Field("", validation_alias="RAILWAY_PROJECT_ID")
-    railway_service_id: str = Field("", validation_alias="RAILWAY_SERVICE_ID")
     hostel_erp_data_dir: str = Field("mmc-uploads/hostel erp data", validation_alias="HOSTEL_ERP_DATA_DIR")
     hostel_erp_receipt_dir: str = Field("", validation_alias="HOSTEL_ERP_RECEIPT_DIR")
     allowed_origins: str = Field(
@@ -69,20 +63,8 @@ class Settings(BaseSettings):
         return f"(?:{configured})|(?:{FIRST_PARTY_ORIGIN_REGEX})"
 
     @property
-    def running_on_railway(self) -> bool:
-        return bool(
-            self.railway_environment
-            or self.railway_environment_name
-            or self.railway_project_id
-            or self.railway_service_id
-        )
-
-    @property
     def sqlalchemy_database_url(self) -> str:
-        if self.running_on_railway and not self.debug and self.mysql_url:
-            database_url = self.mysql_url
-        else:
-            database_url = self.database_url or self.mysql_public_url or self.mysql_url
+        database_url = self.database_url or self.mysql_url or self.mysql_public_url
         if not database_url:
             raise ValueError("Set DATABASE_URL, MYSQL_URL, or MYSQL_PUBLIC_URL.")
         return normalize_mysql_url(database_url)

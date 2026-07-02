@@ -1,8 +1,8 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class StudentBase(BaseModel):
@@ -107,14 +107,11 @@ class RoomRead(RoomBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-ApplicationStatus = Literal["Draft", "Submitted", "Verified", "Approved", "Rejected", "Shortlisted", "Selected", "Waitlisted", "Pending"]
-
-
 class ApplicationBase(BaseModel):
     student_id: int
     application_type: str = "new"
     admission_level: Literal["UG", "PG"] | None = None
-    admission_id: str | None = None
+    admission_id: str
     college_name: str | None = None
     course: str | None = None
     session: str | None = None
@@ -138,7 +135,7 @@ class ApplicationBase(BaseModel):
     percentage: Decimal | None = None
     roll_number: str | None = None
     subject: str | None = None
-    applied_category: Literal["UR", "BC", "EBC", "EWS", "SC", "ST"] | None = None
+    applied_category: Literal["UR", "BC", "EBC", "EWS", "SC", "ST"]
     allotted_category: Literal["UR", "BC", "EBC", "EWS", "SC", "ST"] | None = None
     hostel_id: int | None = None
     room_id: int | None = None
@@ -149,7 +146,7 @@ class ApplicationCreate(ApplicationBase):
 
 
 class ApplicationStatusUpdate(BaseModel):
-    status: ApplicationStatus
+    status: str
     allotted_category: Literal["UR", "BC", "EBC", "EWS", "SC", "ST"] | None = None
     merit_rank: int | None = None
     hostel_id: int | None = None
@@ -160,54 +157,11 @@ class ApplicationRead(ApplicationBase):
     id: int
     application_no: str
     status: str
-    application_status: str = "Draft"
-    current_step: int = 1
-    last_saved_at: datetime | None = None
-    submitted_at: datetime | None = None
     merit_rank: int | None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class ApplicationDraftSave(BaseModel):
-    student_id: int
-    current_step: int = Field(..., ge=1, le=8)
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
-class ApplicationDraftValidate(BaseModel):
-    step: int = Field(..., ge=1, le=8)
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
-class ApplicationSettingsRead(BaseModel):
-    admission_start_date: date | None = None
-    admission_end_date: date | None = None
-    payment_start_date: date | None = None
-    payment_end_date: date | None = None
-    admission_state: str
-    payment_state: str
-    admission_message: str | None = None
-    payment_message: str | None = None
-
-
-class ApplicationSettingsUpdate(BaseModel):
-    admission_start_date: date | None = None
-    admission_end_date: date | None = None
-    payment_start_date: date | None = None
-    payment_end_date: date | None = None
-
-
-class AdminDashboardMetrics(BaseModel):
-    settings: ApplicationSettingsRead
-    countdown_to_admission_closing: str | None = None
-    countdown_to_payment_closing: str | None = None
-    total_draft_applications: int
-    total_submitted_applications: int
-    total_approved_applications: int
-    total_rejected_applications: int
 
 
 class PaymentBase(BaseModel):
@@ -278,27 +232,13 @@ class AdminRead(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    identifier: str | None = Field(None, max_length=160)
-    email: str | None = Field(None, max_length=160)
-    username: str | None = Field(None, max_length=160)
+    identifier: str = Field(..., min_length=3, max_length=160)
     password: str = Field(..., min_length=1, max_length=128)
     role: str = "auto"
-
-    @model_validator(mode="after")
-    def ensure_identifier(self) -> "LoginRequest":
-        if not self.identifier:
-            self.identifier = (self.email or self.username or "").strip()
-        if not self.identifier or len(self.identifier) < 3:
-            raise ValueError("Email, username, or student identifier is required.")
-        return self
 
 
 class LoginResponse(BaseModel):
     role: str
-    access_token: str | None = None
-    token: str | None = None
-    application_completed: bool | None = None
-    application_number: str | None = None
     user: AdminRead | StudentRead
 
 

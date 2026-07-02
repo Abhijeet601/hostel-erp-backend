@@ -102,28 +102,15 @@ def update_student_password(db: Session, student: models.Student, password: str)
     return student
 
 
-def normalize_login_identifier(identifier: str) -> tuple[str, str, str]:
-    raw = (identifier or "").strip()
-    email_key = raw.lower()
-    mobile_digits = "".join(character for character in raw if character.isdigit())
-    mobile_key = mobile_digits[-10:] if len(mobile_digits) >= 10 else mobile_digits
-    student_code_key = raw.upper()
-    return email_key, mobile_key, student_code_key
-
-
 def authenticate_student(db: Session, identifier: str, password: str) -> models.Student | None:
-    email_key, mobile_key, student_code_key = normalize_login_identifier(identifier)
-    if not email_key and not mobile_key and not student_code_key:
-        return None
-
-    conditions = [
-        func.lower(models.Student.email) == email_key,
-        func.upper(models.Student.student_code) == student_code_key,
-    ]
-    if mobile_key:
-        conditions.append(models.Student.mobile == mobile_key)
-
-    student = db.scalar(select(models.Student).where(or_(*conditions)))
+    stmt = select(models.Student).where(
+        or_(
+            models.Student.student_code == identifier,
+            models.Student.email == identifier,
+            models.Student.mobile == identifier,
+        )
+    )
+    student = db.scalar(stmt)
     if not student or not student.password_hash or not verify_password(password, student.password_hash):
         return None
     return student

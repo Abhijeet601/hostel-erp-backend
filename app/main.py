@@ -2,7 +2,6 @@ from pathlib import Path
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
-import logging
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,11 +12,8 @@ from sqlalchemy.orm import Session
 
 from app import crud, models, receipt_service, schemas
 from app.config import get_settings
-from app.database import Base, engine, SessionLocal, get_db
+from app.database import Base, engine, get_db
 from app.r2_storage import get_r2_service
-
-
-logger = logging.getLogger(__name__)
 
 
 settings = get_settings()
@@ -38,29 +34,6 @@ app.add_middleware(
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_schema_updates()
-    seed_default_admin()
-
-
-def seed_default_admin() -> None:
-    from app.schemas import AdminCreate
-
-    with SessionLocal() as db:
-        if crud.get_admin_by_identifier(db, "admin"):
-            return
-
-        default_admin = AdminCreate(
-            username='admin',
-            email='admin@hostel.erp',
-            password='admin123',
-            full_name='Default Admin',
-            role='super_admin',
-            is_active=True,
-        )
-        try:
-            crud.create_admin(db, default_admin)
-            logger.info('Default admin user created: admin / admin123')
-        except Exception as exc:
-            logger.warning(f'Unable to create default admin: {exc}')
 
 
 def ensure_schema_updates() -> None:
@@ -234,20 +207,27 @@ def list_admins(db: Session = Depends(get_db)):
     return crud.list_admins(db)
 
 
-@app.post("/auth/login")
+@app.post("/auth/login", response_model=schemas.LoginResponse)
 def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
-    from app.frontend_api import FrontendLoginRequest, login_student_or_admin
-
-    return login_student_or_admin(
-        FrontendLoginRequest(
-            identifier=payload.identifier,
-            email=payload.email,
-            username=payload.username,
-            password=payload.password,
-            role=payload.role,
-        ),
-        db,
-    )
+    if payload.role == "auto":
+        student = crud.authenticate_student(db, payload.identifier, payload.password)
+        if student:
+            return {"role": "student", "user": student}
+        admin = crud.authenticate_admin(db, payload.identifier, payload.password)
+        if admin:
+            return {"role": "admin", "user": admin}
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid login credentials.")
+    if payload.role == "admin":
+        admin = crud.authenticate_admin(db, payload.identifier, payload.password)
+        if not admin:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin credentials.")
+        return {"role": "admin", "user": admin}
+    if payload.role == "student":
+        student = crud.authenticate_student(db, payload.identifier, payload.password)
+        if not student:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid student credentials.")
+        return {"role": "student", "user": student}
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported login role.")
 
 
 @app.post("/students", response_model=schemas.StudentRead, status_code=status.HTTP_201_CREATED)
@@ -739,8 +719,3 @@ def storage_status():
         "r2_public_url": settings.r2_public_base_url or None,
         "local_fallback": True,
     }
-
-
-from app.frontend_api import router as frontend_router
-
-app.include_router(frontend_router)

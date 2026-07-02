@@ -258,6 +258,19 @@ class PaymentCreate(PaymentBase):
     transaction_no: str
 
 
+class PaymentInitiateRequest(BaseModel):
+    student_id: int
+    application_id: int
+    payment_type: str
+    amount: Decimal
+
+
+class PaymentInitiateResponse(BaseModel):
+    gateway_url: str
+    encRequest: str
+    access_code: str
+
+
 class PaymentRead(PaymentBase):
     id: int
     transaction_no: str

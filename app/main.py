@@ -1,18 +1,20 @@
-from pathlib import Path
+import hashlib
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
+from urllib.parse import parse_qs, urlencode
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
+from Crypto.Cipher import AES
+from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from sqlalchemy import select, text
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app import crud, models, receipt_service, schemas
 from app.config import get_settings
-from app.database import Base, engine, get_db
+from app.database import Base, SessionLocal, engine, get_db
 from app.r2_storage import get_r2_service
 
 
@@ -34,6 +36,12 @@ app.add_middleware(
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_schema_updates()
+    remove_demo_payment_data()
+
+
+def remove_demo_payment_data() -> None:
+    with SessionLocal() as db:
+        crud.delete_demo_payment_data(db)
 
 
 def ensure_schema_updates() -> None:
@@ -660,93 +668,242 @@ def admin_dashboard_metrics(db: Session = Depends(get_db)):
 
 @app.post("/payments", response_model=schemas.PaymentRead, status_code=status.HTTP_201_CREATED)
 def create_payment(payload: schemas.PaymentCreate, db: Session = Depends(get_db)):
-    if not crud.get_student(db, payload.student_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
-    if payload.application_id and not crud.get_application(db, payload.application_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
-    return save_or_409(lambda: crud.create_payment(db, payload))
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Direct payment creation is disabled. Use /api/payment/initiate.",
+    )
 
 
-def require_successful_payment(payload: schemas.PaymentCreate) -> None:
-    if payload.status.lower() not in {"paid", "success", "completed"}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Receipt generation requires a successful payment status.",
-        )
-
-
-def require_payment_application(payload: schemas.PaymentCreate, db: Session):
-    if not payload.application_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Application ID is required.")
-    application = crud.get_application(db, payload.application_id)
-    if not application or application.student_id != payload.student_id:
+def require_payment_application(student_id: int, application_id: int, db: Session):
+    application = crud.get_application(db, application_id)
+    if not application or application.student_id != student_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student application not found.")
     return application
 
 
-@app.post(
-    "/payments/registration/success",
-    response_model=schemas.PaymentReceiptRead,
-    status_code=status.HTTP_201_CREATED,
-)
-def registration_payment_success(payload: schemas.PaymentCreate, db: Session = Depends(get_db)):
-    require_payment_open(db)
-    require_successful_payment(payload)
-    application = require_payment_application(payload, db)
-    if crud.get_successful_payment_for_application(db, application.id, "Registration Fee"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Registration fee has already been paid for this application.",
-        )
-    expected = Decimal("100") if application.application_type == "existing" else Decimal("1000")
-    if payload.amount != expected:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Registration fee must be Rs. {expected:.2f} for this application type.",
-        )
-    payment_payload = payload.model_copy(update={"payment_type": "Registration Fee"})
-    payment = save_or_409(lambda: crud.create_payment(db, payment_payload))
-    return receipt_service.generate_receipt_pdf(db, payment, "application_registration")
+def expected_registration_fee(application: models.HostelApplication) -> Decimal:
+    return Decimal("100") if application.application_type == "existing" else Decimal("1000")
 
 
-@app.post(
-    "/payments/hostel/success",
-    response_model=schemas.PaymentReceiptRead,
-    status_code=status.HTTP_201_CREATED,
-)
-def hostel_payment_success(payload: schemas.PaymentCreate, db: Session = Depends(get_db)):
-    require_payment_open(db)
-    require_successful_payment(payload)
-    application = require_payment_application(payload, db)
-    if crud.get_successful_payment_for_application(db, application.id, "Hostel Admission Fee"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Hostel fee has already been paid for this application.",
-        )
+def expected_hostel_fee(application: models.HostelApplication) -> Decimal:
     if application.status.lower() not in {"selected", "shortlisted", "approved"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Hostel receipt requires a shortlisted or approved application.",
+            detail="Hostel fee requires a shortlisted or approved application.",
         )
     if not application.hostel:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A hostel must be allotted first.")
     hostel_name = application.hostel.name.strip().lower()
     if application.hostel.fee and application.hostel.fee > 0:
-        expected = application.hostel.fee
-    elif "mahima" in hostel_name:
-        expected = Decimal("12000")
-    elif "vaidehi" in hostel_name:
-        expected = Decimal("10000")
-    else:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported hostel fee configuration.")
+        return application.hostel.fee
+    if "mahima" in hostel_name:
+        return Decimal("12000")
+    if "vaidehi" in hostel_name:
+        return Decimal("10000")
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported hostel fee configuration.")
+
+
+def normalize_payment_type(payment_type: str) -> str:
+    value = (payment_type or "").strip().lower()
+    if "hostel" in value:
+        return "Hostel Admission Fee"
+    if "registration" in value:
+        return "Registration Fee"
+    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported payment type.")
+
+
+def validate_payment_initiation(payload: schemas.PaymentInitiateRequest, db: Session) -> models.HostelApplication:
+    require_payment_open(db)
+    if not crud.get_student(db, payload.student_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
+    application = require_payment_application(payload.student_id, payload.application_id, db)
+    if (application.application_status or application.status or "").lower() == "draft":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Submit your application before payment.")
+    payment_type = normalize_payment_type(payload.payment_type)
+    if crud.get_successful_payment_for_application(db, application.id, payment_type):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Hostel fee has already been paid for this application."
+                if payment_type == "Hostel Admission Fee"
+                else "Registration fee has already been paid for this application."
+            ),
+        )
+    expected = expected_hostel_fee(application) if payment_type == "Hostel Admission Fee" else expected_registration_fee(application)
     if payload.amount != expected:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Hostel fee for {application.hostel.name} must be Rs. {expected:.2f}.",
+            detail=f"{payment_type} must be Rs. {expected:.2f}.",
         )
-    payment_payload = payload.model_copy(update={"payment_type": "Hostel Admission Fee"})
+    return application
+
+
+def ccavenue_redirect_url(path: str) -> str:
+    return f"{settings.base_url}{path}"
+
+
+def ccavenue_cipher() -> AES:
+    if not settings.ccavenue_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CCAvenue payment gateway is not configured.",
+        )
+    key = hashlib.md5(settings.ccavenue_working_key.encode("utf-8")).digest()
+    iv = bytes(range(16))
+    return AES.new(key, AES.MODE_CBC, iv)
+
+
+def pkcs7_pad(value: bytes) -> bytes:
+    padding = AES.block_size - (len(value) % AES.block_size)
+    return value + bytes([padding]) * padding
+
+
+def pkcs7_unpad(value: bytes) -> bytes:
+    if not value:
+        raise ValueError("Empty encrypted response.")
+    padding = value[-1]
+    if padding < 1 or padding > AES.block_size:
+        raise ValueError("Invalid encrypted response padding.")
+    return value[:-padding]
+
+
+def ccavenue_encrypt(plain_text: str) -> str:
+    cipher = ccavenue_cipher()
+    return cipher.encrypt(pkcs7_pad(plain_text.encode("utf-8"))).hex()
+
+
+def ccavenue_decrypt(encrypted_text: str) -> str:
+    try:
+        encrypted_bytes = bytes.fromhex(encrypted_text)
+        cipher = ccavenue_cipher()
+        return pkcs7_unpad(cipher.decrypt(encrypted_bytes)).decode("utf-8")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid payment gateway response.",
+        ) from exc
+
+
+def build_ccavenue_request(payment: models.Payment, application: models.HostelApplication) -> str:
+    student = payment.student
+    data = {
+        "merchant_id": settings.ccavenue_merchant_id,
+        "order_id": payment.transaction_no,
+        "currency": settings.ccavenue_currency,
+        "amount": f"{payment.amount:.2f}",
+        "redirect_url": ccavenue_redirect_url("/api/payment/ccavenue/response"),
+        "cancel_url": ccavenue_redirect_url("/api/payment/ccavenue/cancel"),
+        "language": "EN",
+        "billing_name": student.name if student else "",
+        "billing_email": student.email if student else "",
+        "billing_tel": student.mobile if student else "",
+        "merchant_param1": str(payment.student_id),
+        "merchant_param2": str(payment.application_id or ""),
+        "merchant_param3": payment.payment_type,
+        "merchant_param4": application.application_no,
+    }
+    return urlencode(data)
+
+
+def payment_return_page(title: str, message: str, receipt_url: str | None = None) -> HTMLResponse:
+    receipt_link = f'<p><a href="{receipt_url}" target="_blank" rel="noopener">Download Receipt</a></p>' if receipt_url else ""
+    return_url = settings.hostel_erp_frontend_return_url
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title></head>
+<body style="font-family:Arial,sans-serif;max-width:720px;margin:48px auto;padding:0 20px;line-height:1.5;">
+<h1>{title}</h1>
+<p>{message}</p>
+{receipt_link}
+<p><a href="{return_url}">Return to ERP</a></p>
+</body>
+</html>"""
+    )
+
+
+@app.post("/api/payment/initiate", response_model=schemas.PaymentInitiateResponse)
+def initiate_payment(payload: schemas.PaymentInitiateRequest, db: Session = Depends(get_db)):
+    application = validate_payment_initiation(payload, db)
+    payment_type = normalize_payment_type(payload.payment_type)
+    order_id = f"MMC{datetime.now().strftime('%Y%m%d%H%M%S%f')}{application.id}"[:50]
+    payment_payload = schemas.PaymentCreate(
+        student_id=payload.student_id,
+        application_id=application.id,
+        payment_type=payment_type,
+        amount=payload.amount,
+        mode="CCAvenue",
+        status="Pending",
+        transaction_no=order_id,
+        paid_at=None,
+    )
     payment = save_or_409(lambda: crud.create_payment(db, payment_payload))
-    return receipt_service.generate_receipt_pdf(db, payment, "hostel_admission")
+    enc_request = ccavenue_encrypt(build_ccavenue_request(payment, application))
+    return schemas.PaymentInitiateResponse(
+        gateway_url=settings.ccavenue_gateway_url,
+        encRequest=enc_request,
+        access_code=settings.ccavenue_access_code,
+    )
+
+
+def handle_ccavenue_response(enc_resp: str, db: Session) -> HTMLResponse:
+    response_text = ccavenue_decrypt(enc_resp)
+    values = {key: items[0] for key, items in parse_qs(response_text, keep_blank_values=True).items()}
+    order_id = values.get("order_id") or ""
+    payment = crud.get_payment_by_transaction_no(db, order_id)
+    if not payment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment order not found.")
+    order_status = (values.get("order_status") or "").strip()
+    gateway_tracking_id = values.get("tracking_id") or values.get("bank_ref_no") or order_id
+    gateway_mode = values.get("payment_mode") or "CCAvenue"
+    card_name = values.get("card_name")
+    if gateway_tracking_id and gateway_tracking_id != order_id:
+        gateway_mode = f"{gateway_mode} ({gateway_tracking_id})"
+    if card_name:
+        gateway_mode = f"{gateway_mode} - {card_name}"
+    paid_at = datetime.now()
+    if values.get("trans_date"):
+        try:
+            paid_at = datetime.strptime(values["trans_date"], "%d/%m/%Y %H:%M:%S")
+        except ValueError:
+            paid_at = datetime.now()
+    if order_status.lower() == "success":
+        try:
+            response_amount = Decimal(values.get("amount") or "0")
+        except InvalidOperation:
+            response_amount = Decimal("0")
+        response_currency = (values.get("currency") or settings.ccavenue_currency).upper()
+        if response_amount != payment.amount or response_currency != settings.ccavenue_currency.upper():
+            crud.update_payment_gateway_result(db, payment, mode=gateway_mode, status="Invalid")
+            return payment_return_page("Payment Verification Failed", "CCAvenue returned a payment amount or currency that does not match this order.")
+        payment = crud.update_payment_gateway_result(
+            db,
+            payment,
+            mode=gateway_mode,
+            status="Paid",
+            paid_at=paid_at,
+        )
+        receipt_type = "hostel_admission" if "hostel" in payment.payment_type.lower() else "application_registration"
+        receipt = receipt_service.generate_receipt_pdf(db, payment, receipt_type)
+        receipt_url = receipt.pdf_url or f"/receipts/{receipt.id}/download"
+        return payment_return_page("Payment Successful", "Your payment has been verified and the receipt has been generated.", receipt_url)
+    crud.update_payment_gateway_result(db, payment, mode=gateway_mode, status=order_status or "Failed")
+    return payment_return_page("Payment Not Completed", "CCAvenue did not confirm this payment. Please try again from the ERP portal.")
+
+
+@app.post("/api/payment/ccavenue/response", response_class=HTMLResponse)
+def ccavenue_payment_response(encResp: str = Form(...), db: Session = Depends(get_db)):
+    return handle_ccavenue_response(encResp, db)
+
+
+@app.post("/api/payment/ccavenue/cancel", response_class=HTMLResponse)
+def ccavenue_payment_cancel(encResp: str = Form(...), db: Session = Depends(get_db)):
+    return handle_ccavenue_response(encResp, db)
+
+
+@app.post("/api/payment/ccavenue/notification", response_class=HTMLResponse)
+def ccavenue_payment_notification(encResp: str = Form(...), db: Session = Depends(get_db)):
+    return handle_ccavenue_response(encResp, db)
 
 
 @app.get("/payments", response_model=list[schemas.PaymentRead])

@@ -582,6 +582,59 @@ def create_payment(db: Session, payload: schemas.PaymentCreate) -> models.Paymen
     return payment
 
 
+def get_payment_by_transaction_no(db: Session, transaction_no: str) -> models.Payment | None:
+    return db.scalar(select(models.Payment).where(models.Payment.transaction_no == transaction_no))
+
+
+def update_payment_gateway_result(
+    db: Session,
+    payment: models.Payment,
+    *,
+    transaction_no: str | None = None,
+    mode: str | None = None,
+    status: str | None = None,
+    paid_at: datetime | None = None,
+) -> models.Payment:
+    if transaction_no:
+        payment.transaction_no = transaction_no
+    if mode:
+        payment.mode = mode
+    if status:
+        payment.status = status
+    if paid_at:
+        payment.paid_at = paid_at
+    db.commit()
+    db.refresh(payment)
+    return payment
+
+
+def delete_demo_payment_data(db: Session) -> int:
+    receipt_conditions = [models.PaymentReceipt.transaction_id.like("DEMO-%")]
+    demo_payments = list(
+        db.scalars(
+            select(models.Payment).where(
+                or_(
+                    models.Payment.transaction_no.like("DEMO-%"),
+                    func.lower(models.Payment.mode).like("%demo%"),
+                )
+            )
+        )
+    )
+    demo_payment_ids = [payment.id for payment in demo_payments]
+    if demo_payment_ids:
+        receipt_conditions.append(models.PaymentReceipt.payment_id.in_(demo_payment_ids))
+    demo_receipts = list(
+        db.scalars(select(models.PaymentReceipt).where(or_(*receipt_conditions)))
+    )
+    for receipt in demo_receipts:
+        db.delete(receipt)
+    for payment in demo_payments:
+        db.delete(payment)
+    if demo_receipts or demo_payments:
+        db.commit()
+    return len(demo_receipts) + len(demo_payments)
+
+
 def get_successful_payment_for_application(
     db: Session,
     application_id: int,

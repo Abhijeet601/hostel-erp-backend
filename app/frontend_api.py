@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -11,7 +11,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import crud, models, receipt_service, schemas
+from app import crud, models, schemas
 from app.database import get_db
 
 
@@ -46,7 +46,7 @@ class FrontendAdminLoginRequest(BaseModel):
 class FrontendPaymentRequest(BaseModel):
     transaction_id: str | None = None
     amount: Decimal | None = None
-    mode: str = "Demo"
+    mode: str = "CCAvenue"
 
 
 class FrontendVerifyRequest(BaseModel):
@@ -519,61 +519,6 @@ async def save_or_submit_application(
     return serialize_application_form(student, saved)
 
 
-def demo_payment(
-    student: models.Student,
-    db: Session,
-    *,
-    payment_kind: str,
-    transaction_id: str | None,
-) -> dict[str, Any]:
-    from app.main import require_payment_open, save_or_409
-
-    require_payment_open(db)
-    application = crud.get_latest_student_application(db, student.id)
-    if not application:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submit your hostel application before payment.")
-    if payment_kind == "registration":
-        if (application.application_status or "").lower() == "draft":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Submit your application before paying registration fee.")
-        expected = Decimal("100") if application.application_type == "existing" else Decimal("1000")
-        payment_type = "Registration Fee"
-        existing = crud.get_successful_payment_for_application(db, application.id, payment_type)
-        if existing:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Registration fee has already been paid.")
-        receipt_type = "application_registration"
-    else:
-        if (application.application_status or "").lower() not in {"shortlisted", "selected", "approved"}:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Hostel fee requires shortlisting.")
-        if not application.hostel:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A hostel must be allotted first.")
-        expected = application.hostel.fee if application.hostel.fee and application.hostel.fee > 0 else Decimal("10000")
-        payment_type = "Hostel Admission Fee"
-        existing = crud.get_successful_payment_for_application(db, application.id, payment_type)
-        if existing:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hostel fee has already been paid.")
-        receipt_type = "hostel_admission"
-    payment_payload = schemas.PaymentCreate(
-        student_id=student.id,
-        application_id=application.id,
-        payment_type=payment_type,
-        amount=expected,
-        mode="Demo",
-        status="Paid",
-        transaction_no=transaction_id or f"DEMO-{payment_kind.upper()}-{int(datetime.now(timezone.utc).timestamp())}",
-        paid_at=datetime.now(timezone.utc),
-    )
-    payment = save_or_409(lambda: crud.create_payment(db, payment_payload))
-    receipt = receipt_service.generate_receipt_pdf(db, payment, receipt_type)
-    return {
-        "id": payment.id,
-        "payment_type": payment.payment_type,
-        "amount": float(payment.amount),
-        "status": payment.status,
-        "receipt_url": receipt.pdf_url or f"/receipts/{receipt.id}/download",
-        "receipt": receipt,
-    }
-
-
 @router.post("/register")
 @router.post("/api/register")
 def frontend_register(payload: FrontendRegisterRequest, db: Session = Depends(get_db)):
@@ -646,8 +591,11 @@ def frontend_payment_application(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    student = require_student(authorization, db)
-    return demo_payment(student, db, payment_kind="registration", transaction_id=payload.transaction_id)
+    require_student(authorization, db)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This client-confirmed payment endpoint has been removed. Use /api/payment/initiate.",
+    )
 
 
 @router.post("/payment/hostel")
@@ -657,8 +605,11 @@ def frontend_payment_hostel(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    student = require_student(authorization, db)
-    return demo_payment(student, db, payment_kind="hostel", transaction_id=payload.transaction_id)
+    require_student(authorization, db)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This client-confirmed payment endpoint has been removed. Use /api/payment/initiate.",
+    )
 
 
 @router.get("/admin/dashboard")

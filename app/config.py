@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     mysql_url: str = Field("", validation_alias="MYSQL_URL")
     mysql_public_url: str = Field("", validation_alias="MYSQL_PUBLIC_URL")
     public_base_url: str = Field("", validation_alias="PUBLIC_BASE_URL")
+    hostel_erp_frontend_return_url: str = Field(
+        "https://magadhmahilacollege.org/mmc-erp/student/receipt.html",
+        validation_alias="HOSTEL_ERP_FRONTEND_RETURN_URL",
+    )
     railway_public_domain: str = Field("", validation_alias="RAILWAY_PUBLIC_DOMAIN")
     hostel_erp_data_dir: str = Field("mmc-uploads/hostel erp data", validation_alias="HOSTEL_ERP_DATA_DIR")
     hostel_erp_receipt_dir: str = Field("", validation_alias="HOSTEL_ERP_RECEIPT_DIR")
@@ -47,6 +51,14 @@ class Settings(BaseSettings):
     r2_secret_access_key: str = Field("", validation_alias="R2_SECRET_ACCESS_KEY")
     r2_bucket_name: str = Field("mmc-erp-files", validation_alias="R2_BUCKET_NAME")
     r2_public_url: str = Field("", validation_alias="R2_PUBLIC_URL")
+    ccavenue_merchant_id: str = Field("", validation_alias="CCAVENUE_MERCHANT_ID")
+    ccavenue_access_code: str = Field("", validation_alias="CCAVENUE_ACCESS_CODE")
+    ccavenue_working_key: str = Field("", validation_alias="CCAVENUE_WORKING_KEY")
+    ccavenue_gateway_url: str = Field(
+        "https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction",
+        validation_alias="CCAVENUE_GATEWAY_URL",
+    )
+    ccavenue_currency: str = Field("INR", validation_alias="CCAVENUE_CURRENCY")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -108,6 +120,10 @@ class Settings(BaseSettings):
         if self.r2_public_url:
             return self.r2_public_url.rstrip("/")
         return ""
+
+    @property
+    def ccavenue_enabled(self) -> bool:
+        return bool(self.ccavenue_merchant_id and self.ccavenue_access_code and self.ccavenue_working_key)
 
 
 

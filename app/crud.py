@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import logging
 import secrets
 from datetime import datetime, timezone
 
@@ -7,7 +8,9 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app import models, schemas
+from app.photo_service import upload_student_photo
 
+logger = logging.getLogger(__name__)
 
 PASSWORD_HASH_ITERATIONS = 260_000
 
@@ -301,8 +304,26 @@ def save_application_draft(
         )
         db.add(application)
 
+    # Handle photo upload
+    photo_data = data.get("student_photo_data")
+    if photo_data:
+        photo_url = upload_student_photo(student.id, photo_data)
+        if photo_url:
+            data = dict(data)  # Make a copy to avoid modifying the original
+            data["student_photo_url"] = photo_url
+            data.pop("student_photo_data", None)  # Remove the base64 data
+        else:
+            logger.warning("Failed to upload photo for student %d", student.id)
+            data = dict(data)
+            data.pop("student_photo_data", None)
+
     for key, value in data.items():
         if key in APPLICATION_DRAFT_FIELDS:
+            # Skip student_photo_data, use student_photo_url instead
+            if key == "student_photo_data":
+                continue
+            setattr(application, key, value)
+        elif key == "student_photo_url":
             setattr(application, key, value)
         if key in STUDENT_DRAFT_FIELDS:
             setattr(student, key, value)
@@ -318,9 +339,27 @@ def save_application_draft(
 
 def submit_application(db: Session, application: models.HostelApplication, data: dict | None = None) -> models.HostelApplication:
     if data:
+        # Handle photo upload
+        photo_data = data.get("student_photo_data")
+        if photo_data:
+            photo_url = upload_student_photo(application.student_id, photo_data)
+            if photo_url:
+                data = dict(data)
+                data["student_photo_url"] = photo_url
+                data.pop("student_photo_data", None)
+            else:
+                logger.warning("Failed to upload photo for student %d", application.student_id)
+                data = dict(data)
+                data.pop("student_photo_data", None)
+
         for key, value in data.items():
             if key in APPLICATION_DRAFT_FIELDS:
+                if key == "student_photo_data":
+                    continue
                 setattr(application, key, value)
+            elif key == "student_photo_url":
+                setattr(application, key, value)
+
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     application.current_step = 8
     application.status = "Submitted"
@@ -462,3 +501,4 @@ def authenticate_admin(db: Session, identifier: str, password: str) -> models.Ad
     if not admin or not verify_password(password, admin.password_hash):
         return None
     return admin
+

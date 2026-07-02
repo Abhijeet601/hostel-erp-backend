@@ -14,6 +14,15 @@ def normalize_mysql_url(value: str) -> str:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+# These are the first-party origins that serve the static Hostel ERP portal.
+# Keep them separate from ALLOWED_ORIGIN_REGEX so an older Railway environment
+# variable cannot accidentally lock the production website out of the API.
+FIRST_PARTY_ORIGIN_REGEX = (
+    r"^https://(www\.)?magadhmahilacollege\.org$"
+    r"|^https://[^/]+\.vercel\.app$"
+    r"|^https://[^/]+\.netlify\.app$"
+)
+
 
 class Settings(BaseSettings):
     app_name: str = Field("MMC Hostel ERP API", validation_alias="APP_NAME")
@@ -45,6 +54,13 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def cors_origin_regex(self) -> str:
+        configured = self.allowed_origin_regex.strip()
+        if not configured:
+            return FIRST_PARTY_ORIGIN_REGEX
+        return f"(?:{configured})|(?:{FIRST_PARTY_ORIGIN_REGEX})"
 
     @property
     def sqlalchemy_database_url(self) -> str:

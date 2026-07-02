@@ -69,7 +69,7 @@ class HostelApplication(Base):
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), index=True)
     application_type: Mapped[str] = mapped_column(String(30), default="new")
     admission_level: Mapped[str | None] = mapped_column(String(2))
-    admission_id: Mapped[str | None] = mapped_column(String(50), index=True, nullable=True)
+    admission_id: Mapped[str] = mapped_column(String(50), index=True)
     college_name: Mapped[str | None] = mapped_column(String(160))
     course: Mapped[str | None] = mapped_column(String(80))
     session: Mapped[str | None] = mapped_column(String(20))
@@ -93,13 +93,9 @@ class HostelApplication(Base):
     percentage: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     roll_number: Mapped[str | None] = mapped_column(String(50))
     subject: Mapped[str | None] = mapped_column(String(80))
-    applied_category: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    applied_category: Mapped[str] = mapped_column(String(20))
     allotted_category: Mapped[str | None] = mapped_column(String(20))
-    status: Mapped[str] = mapped_column(String(30), default="Draft")
-    application_status: Mapped[str] = mapped_column(String(30), default="Draft", index=True)
-    current_step: Mapped[int] = mapped_column(default=1)
-    last_saved_at: Mapped[datetime | None] = mapped_column(DateTime)
-    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(30), default="Pending")
     merit_rank: Mapped[int | None] = mapped_column()
     hostel_id: Mapped[int | None] = mapped_column(ForeignKey("hostels.id", ondelete="SET NULL"))
     room_id: Mapped[int | None] = mapped_column(ForeignKey("rooms.id", ondelete="SET NULL"))
@@ -162,17 +158,5 @@ class AdminUser(Base):
     full_name: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(50), default="admin")
     is_active: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-
-
-class AdmissionPaymentSettings(Base):
-    __tablename__ = "admission_payment_settings"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    admission_start_date: Mapped[date | None] = mapped_column(Date)
-    admission_end_date: Mapped[date | None] = mapped_column(Date)
-    payment_start_date: Mapped[date | None] = mapped_column(Date)
-    payment_end_date: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

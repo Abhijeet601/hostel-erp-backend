@@ -358,10 +358,29 @@ def get_room_bed_inventory(room_id: int, db: Session = Depends(get_db)):
             )
         )
     )
-    occupied_bed_names = {app.bed for app in occupied_applications if app.bed}
-    bed_labels = ["A", "B", "C"]
-    available_beds = [bed for bed in bed_labels if bed not in occupied_bed_names]
-    occupied_beds = [bed for bed in bed_labels if bed in occupied_bed_names]
+    applications_by_bed = {app.bed: app for app in occupied_applications if app.bed}
+    bed_labels = ["A", "B", "C"][: max(int(room.beds or 0), 0)]
+    available_beds = [bed for bed in bed_labels if bed not in applications_by_bed]
+    occupied_beds = [bed for bed in bed_labels if bed in applications_by_bed]
+    bed_details = []
+    for bed in bed_labels:
+        application = applications_by_bed.get(bed)
+        student = application.student if application else None
+        bed_details.append(
+            {
+                "bed": bed,
+                "bed_number": f"{room.room_number} - {bed}",
+                "status": "occupied" if application else "available",
+                "student_name": student.name if student else None,
+                "student_id": student.student_code if student else None,
+                "registration_number": student.student_code if student else None,
+                "application_id": application.id if application else None,
+                "application_no": application.application_no if application else None,
+                "allocation_date": application.allocation_date.isoformat()
+                if application and application.allocation_date
+                else None,
+            }
+        )
     return {
         "room_id": room.id,
         "room_number": room.room_number,
@@ -371,6 +390,7 @@ def get_room_bed_inventory(room_id: int, db: Session = Depends(get_db)):
         "remaining_beds": len(available_beds),
         "occupied_bed_numbers": occupied_beds,
         "available_bed_numbers": available_beds,
+        "beds": bed_details,
         "status": "full" if not available_beds else ("available" if len(available_beds) > 0 else "full"),
     }
 

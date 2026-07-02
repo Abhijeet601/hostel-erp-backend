@@ -173,7 +173,12 @@ def list_rooms(db: Session, hostel_id: int | None = None) -> list[models.Room]:
     stmt = select(models.Room).order_by(models.Room.floor, models.Room.room_number)
     if hostel_id:
         stmt = stmt.where(models.Room.hostel_id == hostel_id)
-    return list(db.scalars(stmt))
+    rooms = list(db.scalars(stmt))
+    for room in rooms:
+        sync_room_occupancy(db, room)
+    if rooms:
+        db.commit()
+    return rooms
 
 
 def get_room(db: Session, room_id: int) -> models.Room | None:
@@ -432,9 +437,6 @@ def assign_application_bed(
     normalized_bed = normalize_bed_value(bed)
     if normalized_bed not in {"A", "B", "C"}:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Bed must be A, B, or C.")
-    if room.occupied_beds >= max(int(room.beds or 0), 0):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room is fully occupied. Please select another room.")
-
     existing_conflict = db.scalar(
         select(models.HostelApplication).where(
             models.HostelApplication.room_id == room_id,
@@ -446,6 +448,10 @@ def assign_application_bed(
     )
     if existing_conflict:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Selected bed is already occupied.")
+    if room.occupied_beds >= max(int(room.beds or 0), 0) and (
+        application.room_id != room_id or application.bed != normalized_bed
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room is fully occupied. Please select another room.")
 
     old_room_id = application.room_id
     if old_room_id and old_room_id != room_id:
@@ -471,14 +477,15 @@ def assign_application_bed(
 
 
 def release_application_bed(db: Session, application: models.HostelApplication) -> models.HostelApplication:
-    if application.room_id:
-        room = db.get(models.Room, application.room_id)
-        if room:
-            sync_room_occupancy(db, room)
-            db.add(room)
+    old_room_id = application.room_id
     application.bed = None
     application.allocation_status = "vacated"
     db.add(application)
+    if application.room_id:
+        room = db.get(models.Room, old_room_id)
+        if room:
+            sync_room_occupancy(db, room)
+            db.add(room)
     return application
 
 

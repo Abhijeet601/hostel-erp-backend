@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app import crud, models, receipt_service, schemas
@@ -89,6 +89,7 @@ def ensure_schema_updates() -> None:
                 conn.execute(text(f"ALTER TABLE rooms ADD COLUMN {column} {ddl}"))
         conn.execute(text("ALTER TABLE hostel_applications MODIFY admission_id VARCHAR(50) NULL"))
         conn.execute(text("ALTER TABLE hostel_applications MODIFY applied_category VARCHAR(20) NULL"))
+        conn.execute(text("ALTER TABLE hostel_applications MODIFY student_photo_data LONGTEXT NULL"))
         conn.execute(
             text(
                 """
@@ -122,6 +123,11 @@ def save_or_409(action):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Duplicate or invalid related record.",
+        ) from exc
+    except DataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="One or more fields exceed the allowed size or format.",
         ) from exc
 
 

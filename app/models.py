@@ -2,6 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -85,7 +86,7 @@ class HostelApplication(Base):
     aadhar_number: Mapped[str | None] = mapped_column(String(12))
     religion: Mapped[str | None] = mapped_column(String(60))
     nationality: Mapped[str | None] = mapped_column(String(60))
-    student_photo_data: Mapped[str | None] = mapped_column(Text)
+    student_photo_data: Mapped[str | None] = mapped_column(LONGTEXT)
     intermediate_college: Mapped[str | None] = mapped_column(String(160))
     board: Mapped[str | None] = mapped_column(String(50))
     previous_course: Mapped[str | None] = mapped_column(String(80))

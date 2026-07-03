@@ -19,8 +19,13 @@ from app.r2_storage import get_r2_service
 logger = logging.getLogger(__name__)
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-LOGO_PATH = PROJECT_ROOT / "Magadh_Mahila_College.png"
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = BACKEND_ROOT.parent
+LOGO_CANDIDATES = [
+    BACKEND_ROOT / "Magadh_Mahila_College.png",
+    WORKSPACE_ROOT / "frontend" / "mmc-erp" / "Magadh_Mahila_College.png",
+    WORKSPACE_ROOT / "Magadh_Mahila_College.png",
+]
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "receipts"
 
 templates = Environment(
@@ -84,6 +89,15 @@ def file_data_uri(path: Path) -> str:
     return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
 
+def college_logo_data_uri() -> str:
+    for path in LOGO_CANDIDATES:
+        data_uri = file_data_uri(path)
+        if data_uri:
+            return data_uri
+    logger.warning("College logo not found in receipt logo candidates: %s", LOGO_CANDIDATES)
+    return ""
+
+
 def qr_data_uri(value: str) -> str:
     image = qrcode.make(value)
     buffer = BytesIO()
@@ -115,7 +129,7 @@ def common_context(receipt: models.PaymentReceipt, payment: models.Payment) -> d
         "receipt_number": receipt.receipt_number,
         "generated_at": display_date(receipt.generated_at or datetime.now(), include_time=True),
         "payment_date_only": display_date(paid_at),
-        "logo_data": file_data_uri(LOGO_PATH),
+        "logo_data": college_logo_data_uri(),
         "photo_data": app.student_photo_data if app and app.student_photo_data else "",
         "qr_data": qr_data_uri(verification_url(receipt.receipt_number)),
     }

@@ -1104,10 +1104,12 @@ def download_receipt(receipt_id: int, db: Session = Depends(get_db)):
     if not receipt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt not found.")
 
-    # If the receipt has an R2 public URL, redirect to it
-    if receipt.pdf_url and receipt.pdf_url.startswith("http"):
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=receipt.pdf_url, status_code=307)
+    # Regenerate first when possible so older receipts also get template/logo fixes.
+    if receipt.payment:
+        updated_receipt = receipt_service.generate_receipt_pdf(db, receipt.payment, receipt.receipt_type)
+        if updated_receipt.pdf_url and updated_receipt.pdf_url.startswith("http"):
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=updated_receipt.pdf_url, status_code=307)
 
     # Try to get PDF bytes from R2 or local storage
     pdf_bytes = receipt_service.get_receipt_pdf_bytes(receipt.receipt_number)
@@ -1118,13 +1120,9 @@ def download_receipt(receipt_id: int, db: Session = Depends(get_db)):
             headers={"Content-Disposition": f'attachment; filename="{receipt.receipt_number}.pdf"'},
         )
 
-    # Last resort: regenerate the receipt
+    # Last resort: fail if there is no payment to regenerate from.
     if not receipt.payment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt PDF not found.")
-    updated_receipt = receipt_service.generate_receipt_pdf(db, receipt.payment, receipt.receipt_type)
-    if updated_receipt.pdf_url and updated_receipt.pdf_url.startswith("http"):
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=updated_receipt.pdf_url, status_code=307)
 
     # Fallback to local file
     path = receipt_service.receipt_pdf_path(receipt.receipt_number)

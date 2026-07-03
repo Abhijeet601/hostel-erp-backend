@@ -80,6 +80,12 @@ def ensure_schema_updates() -> None:
             "admission_receipt_data": "TEXT",
             "income_certificate_data": "TEXT",
             "caste_certificate_data": "TEXT",
+            "existing_hostel_name": "VARCHAR(120)",
+            "existing_room_number": "VARCHAR(40)",
+            "existing_bed_number": "VARCHAR(40)",
+            "existing_block": "VARCHAR(40)",
+            "existing_floor": "VARCHAR(40)",
+            "existing_previous_session": "VARCHAR(20)",
         }
         required_payment_columns = {
             "currency": "VARCHAR(10) NOT NULL DEFAULT 'INR'",
@@ -133,6 +139,12 @@ def ensure_schema_updates() -> None:
         "admission_receipt_data": "LONGTEXT NULL",
         "income_certificate_data": "LONGTEXT NULL",
         "caste_certificate_data": "LONGTEXT NULL",
+        "existing_hostel_name": "VARCHAR(120) NULL",
+        "existing_room_number": "VARCHAR(40) NULL",
+        "existing_bed_number": "VARCHAR(40) NULL",
+        "existing_block": "VARCHAR(40) NULL",
+        "existing_floor": "VARCHAR(40) NULL",
+        "existing_previous_session": "VARCHAR(20) NULL",
     }
     required_room_columns = {
         "occupied_beds": "INT NOT NULL DEFAULT 0",
@@ -423,13 +435,23 @@ STEP_REQUIRED_FIELDS = {
     4: ["intermediate_college", "board", "previous_course", "total_marks", "marks_obtained", "result_type", "percentage"],
     5: ["father_name", "mother_name"],
     6: ["permanent_address", "correspondence_address"],
-    7: ["student_photo_data"],
+    7: ["student_photo_data", "aadhar_card_data", "admission_receipt_data"],
     8: [],
 }
 
 
 def validate_step_payload(step: int, data: dict) -> None:
     missing = [field for field in STEP_REQUIRED_FIELDS.get(step, []) if data.get(field) in (None, "")]
+    if step == 1 and str(data.get("application_type") or "").lower() == "existing":
+        for field in ("existing_hostel_name", "existing_room_number", "existing_previous_session"):
+            if data.get(field) in (None, ""):
+                missing.append(field)
+    if step == 7:
+        category = str(data.get("applied_category") or data.get("category") or "").upper()
+        if category == "EWS" and data.get("income_certificate_data") in (None, ""):
+            missing.append("income_certificate_data")
+        if category in {"BC", "EBC", "SC", "ST"} and data.get("caste_certificate_data") in (None, ""):
+            missing.append("caste_certificate_data")
     if missing:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

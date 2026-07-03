@@ -182,6 +182,12 @@ class ApplicationBase(BaseModel):
     admission_receipt_data: str | None = None
     income_certificate_data: str | None = None
     caste_certificate_data: str | None = None
+    existing_hostel_name: str | None = None
+    existing_room_number: str | None = None
+    existing_bed_number: str | None = None
+    existing_block: str | None = None
+    existing_floor: str | None = None
+    existing_previous_session: str | None = None
     intermediate_college: str | None = None
     board: str | None = None
     previous_course: str | None = None

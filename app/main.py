@@ -39,12 +39,24 @@ app.include_router(frontend_router)
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_schema_updates()
+    ensure_default_admin()
     remove_demo_payment_data()
 
 
 def remove_demo_payment_data() -> None:
     with SessionLocal() as db:
         crud.delete_demo_payment_data(db)
+
+
+def ensure_default_admin() -> None:
+    with SessionLocal() as db:
+        crud.ensure_default_admin(
+            db,
+            username=settings.admin_username,
+            email=settings.admin_email,
+            password=settings.admin_password,
+            full_name=settings.admin_full_name,
+        )
 
 
 def ensure_schema_updates() -> None:

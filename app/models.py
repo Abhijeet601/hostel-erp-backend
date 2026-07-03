@@ -93,7 +93,7 @@ class HostelApplication(Base):
     aadhar_number: Mapped[str | None] = mapped_column(String(12))
     religion: Mapped[str | None] = mapped_column(String(60))
     nationality: Mapped[str | None] = mapped_column(String(60))
-    student_photo_data: Mapped[str | None] = mapped_column(LONGTEXT)
+    student_photo_data: Mapped[str | None] = mapped_column(Text().with_variant(LONGTEXT, "mysql"))
     intermediate_college: Mapped[str | None] = mapped_column(String(160))
     board: Mapped[str | None] = mapped_column(String(50))
     previous_course: Mapped[str | None] = mapped_column(String(80))

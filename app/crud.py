@@ -12,6 +12,12 @@ from app import models, schemas
 
 
 PASSWORD_HASH_ITERATIONS = 260_000
+try:
+    from passlib.context import CryptContext
+
+    legacy_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+except Exception:
+    legacy_pwd_context = None
 
 
 def hash_password(password: str) -> str:
@@ -54,19 +60,32 @@ def hash_reset_token(token: str) -> str:
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    if not password_hash:
+        return False
     try:
         algorithm, iterations, salt, stored_digest = password_hash.split("$", 3)
         if algorithm != "pbkdf2_sha256":
-            return False
+            raise ValueError
         digest = hashlib.pbkdf2_hmac(
             "sha256",
             password.encode("utf-8"),
             salt.encode("utf-8"),
             int(iterations),
         ).hex()
+        return hmac.compare_digest(digest, stored_digest)
     except (ValueError, TypeError):
+        if password_hash.startswith(("$2a$", "$2b$", "$2y$")) and legacy_pwd_context is not None:
+            try:
+                return bool(legacy_pwd_context.verify(password, password_hash))
+            except Exception:
+                return False
+        if "$" not in password_hash and len(password_hash) < 128:
+            return hmac.compare_digest(password, password_hash)
         return False
-    return hmac.compare_digest(digest, stored_digest)
+
+
+def needs_password_rehash(password_hash: str | None) -> bool:
+    return not bool(password_hash and password_hash.startswith("pbkdf2_sha256$"))
 
 
 def create_student(db: Session, payload: schemas.StudentCreate) -> models.Student:
@@ -150,6 +169,11 @@ def authenticate_student(db: Session, identifier: str, password: str) -> models.
     student = db.scalar(stmt)
     if not student or not student.is_active or not student.password_hash or not verify_password(password, student.password_hash):
         return None
+    if needs_password_rehash(student.password_hash):
+        student.password_hash = hash_password(password)
+        db.add(student)
+        db.commit()
+        db.refresh(student)
     return student
 
 
@@ -738,4 +762,34 @@ def authenticate_admin(db: Session, identifier: str, password: str) -> models.Ad
     admin = db.scalar(stmt)
     if not admin or not verify_password(password, admin.password_hash):
         return None
+    if needs_password_rehash(admin.password_hash):
+        admin.password_hash = hash_password(password)
+        db.add(admin)
+        db.commit()
+        db.refresh(admin)
+    return admin
+
+
+def ensure_default_admin(
+    db: Session,
+    *,
+    username: str,
+    email: str,
+    password: str,
+    full_name: str,
+) -> models.AdminUser | None:
+    existing_count = db.scalar(select(func.count(models.AdminUser.id))) or 0
+    if existing_count:
+        return None
+    admin = models.AdminUser(
+        username=username,
+        email=email,
+        password_hash=hash_password(password),
+        full_name=full_name,
+        role="super_admin",
+        is_active=True,
+    )
+    db.add(admin)
+    db.commit()
+    db.refresh(admin)
     return admin

@@ -195,6 +195,10 @@ def serialize_admin_login(admin: models.AdminUser) -> dict[str, Any]:
         "role": admin.role,
         "access_token": admin_token(admin.id),
         "token": admin_token(admin.id),
+        "username": admin.username,
+        "email": admin.email,
+        "full_name": admin.full_name,
+        "token_type": "bearer",
         "user": {
             "id": admin.id,
             "username": admin.username,

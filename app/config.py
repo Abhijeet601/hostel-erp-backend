@@ -59,6 +59,10 @@ class Settings(BaseSettings):
         validation_alias="CCAVENUE_GATEWAY_URL",
     )
     ccavenue_currency: str = Field("INR", validation_alias="CCAVENUE_CURRENCY")
+    admin_username: str = Field("admin", validation_alias="ADMIN_USERNAME")
+    admin_email: str = Field("admin@magadhmahilacollege.ac.in", validation_alias="ADMIN_EMAIL")
+    admin_password: str = Field("ChangeThis@123", validation_alias="ADMIN_PASSWORD")
+    admin_full_name: str = Field("Hostel Administrator", validation_alias="ADMIN_FULL_NAME")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

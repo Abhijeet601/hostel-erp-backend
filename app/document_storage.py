@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import re
 from uuid import uuid4
 
 from app.r2_storage import get_r2_service
 
+
+logger = logging.getLogger(__name__)
 
 APPLICATION_DOCUMENT_FIELDS = {
     "student_photo_data": "photo",
@@ -49,6 +52,7 @@ def upload_application_documents(
     *,
     student_id: int,
     application_id: int | None = None,
+    previous_values: dict | None = None,
 ) -> dict:
     r2 = get_r2_service()
     if not r2.enabled:
@@ -69,5 +73,14 @@ def upload_application_documents(
             f"applications/student-{safe_slug(student_id)}/"
             f"{application_part}/{label}-{uuid4().hex}.{ext}"
         )
-        normalized[field] = r2.upload_bytes(body, key, content_type=content_type)
+        new_url = r2.upload_bytes(body, key, content_type=content_type)
+        old_url = (previous_values or {}).get(field)
+        normalized[field] = new_url
+        if old_url and old_url != new_url and isinstance(old_url, str) and old_url.startswith("http"):
+            try:
+                old_key = r2.key_from_public_url(old_url)
+                if old_key:
+                    r2.delete_file(old_key)
+            except Exception:
+                logger.exception("Failed to delete replaced R2 document for student %s field %s", student_id, field)
     return normalized

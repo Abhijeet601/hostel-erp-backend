@@ -772,7 +772,11 @@ async def save_or_submit_application(
             merged = {field: getattr(application, field, None) for field in crud.APPLICATION_DRAFT_FIELDS}
             merged.update(raw_data)
             validate_step_payload(step, merged)
-        raw_data = upload_application_documents(raw_data, student_id=student.id, application_id=application.id)
+        previous_documents = {
+            field: getattr(application, field, None)
+            for field in ("student_photo_data", "aadhar_card_data", "admission_receipt_data", "income_certificate_data", "caste_certificate_data")
+        }
+        raw_data = upload_application_documents(raw_data, student_id=student.id, application_id=application.id, previous_values=previous_documents)
         updated = crud.save_application_draft(db, student, 8, raw_data)
         submitted = crud.submit_application(db, updated)
         return {
@@ -783,10 +787,15 @@ async def save_or_submit_application(
         }
     require_admission_open(db, existing_draft=bool(existing_draft))
     validate_step_payload(current_step, raw_data)
+    previous_documents = {
+        field: getattr(existing_draft, field, None)
+        for field in ("student_photo_data", "aadhar_card_data", "admission_receipt_data", "income_certificate_data", "caste_certificate_data")
+    } if existing_draft else {}
     raw_data = upload_application_documents(
         raw_data,
         student_id=student.id,
         application_id=existing_draft.id if existing_draft else None,
+        previous_values=previous_documents,
     )
     saved = crud.save_application_draft(db, student, current_step, raw_data)
     return serialize_application_form(student, saved)

@@ -5,7 +5,7 @@ from io import BytesIO
 from urllib.parse import parse_qs, urlencode
 
 from Crypto.Cipher import AES
-from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from sqlalchemy import select, text
@@ -260,6 +260,59 @@ def save_or_409(action):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="One or more fields exceed the allowed size or format.",
         ) from exc
+
+
+def parse_frontend_token(authorization: str | None = None, token: str | None = None) -> tuple[str, int] | None:
+    raw = token or ""
+    if not raw and authorization:
+        raw = authorization.strip()
+        if raw.lower().startswith("bearer "):
+            raw = raw[7:].strip()
+    if raw.startswith("mmc-student-"):
+        try:
+            return "student", int(raw.removeprefix("mmc-student-"))
+        except ValueError:
+            return None
+    if raw.startswith("mmc-admin-"):
+        try:
+            return "admin", int(raw.removeprefix("mmc-admin-"))
+        except ValueError:
+            return None
+    return None
+
+
+def authorized_receipt_student_id(
+    db: Session,
+    student_id: int | None,
+    authorization: str | None = None,
+    token: str | None = None,
+) -> int | None:
+    parsed = parse_frontend_token(authorization, token)
+    if not parsed:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Login required.")
+    role, user_id = parsed
+    if role == "admin":
+        admin = db.get(models.AdminUser, user_id)
+        if admin and admin.is_active:
+            return student_id
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin session expired.")
+    student = crud.get_student(db, user_id)
+    if not student or not student.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Student session expired.")
+    if student_id and student_id != student.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students can only access their own receipts.")
+    return student.id
+
+
+def authorize_receipt_access(
+    db: Session,
+    receipt: models.PaymentReceipt,
+    authorization: str | None = None,
+    token: str | None = None,
+) -> None:
+    scoped_student_id = authorized_receipt_student_id(db, receipt.student_id, authorization, token)
+    if scoped_student_id is not None and receipt.student_id != scoped_student_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Receipt does not belong to this student.")
 
 
 def settings_response(settings_model: models.AdmissionPaymentSettings) -> schemas.ApplicationSettingsRead:
@@ -588,7 +641,15 @@ def update_room(room_id: int, payload: schemas.RoomUpdate, db: Session = Depends
 
 
 @app.post("/applications", response_model=schemas.ApplicationRead, status_code=status.HTTP_201_CREATED)
-def create_application(payload: schemas.ApplicationCreate, db: Session = Depends(get_db)):
+def create_application(
+    payload: schemas.ApplicationCreate,
+    authorization: str | None = Header(None),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
+    scoped_student_id = authorized_receipt_student_id(db, payload.student_id, authorization, token)
+    if scoped_student_id and scoped_student_id != payload.student_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students can only create their own applications.")
     if not crud.get_student(db, payload.student_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
     require_admission_open(db)
@@ -612,7 +673,15 @@ def validate_application_step(payload: schemas.ApplicationDraftValidate) -> dict
 
 
 @app.post("/applications/draft", response_model=schemas.ApplicationRead)
-def save_application_draft(payload: schemas.ApplicationDraftSave, db: Session = Depends(get_db)):
+def save_application_draft(
+    payload: schemas.ApplicationDraftSave,
+    authorization: str | None = Header(None),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
+    scoped_student_id = authorized_receipt_student_id(db, payload.student_id, authorization, token)
+    if scoped_student_id and scoped_student_id != payload.student_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students can only update their own applications.")
     student = crud.get_student(db, payload.student_id)
     if not student:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
@@ -634,23 +703,45 @@ def save_application_draft(payload: schemas.ApplicationDraftSave, db: Session = 
                 status_code=status.HTTP_409_CONFLICT,
                 detail="A hostel application already exists for this session.",
             )
+    previous_documents = {
+        field: getattr(existing_draft, field, None)
+        for field in ("student_photo_data", "aadhar_card_data", "admission_receipt_data", "income_certificate_data", "caste_certificate_data")
+    } if existing_draft else {}
     data = upload_application_documents(
         data,
         student_id=student.id,
         application_id=existing_draft.id if existing_draft else None,
+        previous_values=previous_documents,
     )
     return save_or_409(lambda: crud.save_application_draft(db, student, payload.current_step, data))
 
 
 @app.get("/applications/resume/{student_id}", response_model=schemas.ApplicationRead | None)
-def resume_application(student_id: int, db: Session = Depends(get_db)):
+def resume_application(
+    student_id: int,
+    authorization: str | None = Header(None),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
+    scoped_student_id = authorized_receipt_student_id(db, student_id, authorization, token)
+    if scoped_student_id and scoped_student_id != student_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students can only resume their own applications.")
     if not crud.get_student(db, student_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
     return crud.get_latest_student_application(db, student_id)
 
 
 @app.post("/applications/{application_id}/submit", response_model=schemas.ApplicationRead)
-def submit_application(application_id: int, payload: schemas.ApplicationDraftSave, db: Session = Depends(get_db)):
+def submit_application(
+    application_id: int,
+    payload: schemas.ApplicationDraftSave,
+    authorization: str | None = Header(None),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
+    scoped_student_id = authorized_receipt_student_id(db, payload.student_id, authorization, token)
+    if scoped_student_id and scoped_student_id != payload.student_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students can only submit their own applications.")
     application = crud.get_application(db, application_id)
     if not application:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
@@ -671,7 +762,11 @@ def submit_application(application_id: int, payload: schemas.ApplicationDraftSav
     })
     for step in range(1, 8):
         validate_step_payload(step, merged)
-    data = upload_application_documents(data, student_id=application.student_id, application_id=application.id)
+    previous_documents = {
+        field: getattr(application, field, None)
+        for field in ("student_photo_data", "aadhar_card_data", "admission_receipt_data", "income_certificate_data", "caste_certificate_data")
+    }
+    data = upload_application_documents(data, student_id=application.student_id, application_id=application.id, previous_values=previous_documents)
     return save_or_409(lambda: crud.submit_application(db, application, data))
 
 
@@ -679,16 +774,29 @@ def submit_application(application_id: int, payload: schemas.ApplicationDraftSav
 def list_applications(
     status_filter: str | None = None,
     student_id: int | None = None,
+    authorization: str | None = Header(None),
+    token: str | None = None,
     db: Session = Depends(get_db),
 ):
+    if student_id is not None:
+        scoped_student_id = authorized_receipt_student_id(db, student_id, authorization, token)
+        return crud.list_applications(db, status=status_filter, student_id=scoped_student_id)
     return crud.list_applications(db, status=status_filter, student_id=student_id)
 
 
 @app.get("/applications/{application_id}", response_model=schemas.ApplicationRead)
-def get_application(application_id: int, db: Session = Depends(get_db)):
+def get_application(
+    application_id: int,
+    authorization: str | None = Header(None),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
     application = crud.get_application(db, application_id)
     if not application:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
+    scoped_student_id = authorized_receipt_student_id(db, application.student_id, authorization, token)
+    if scoped_student_id and scoped_student_id != application.student_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Students can only view their own applications.")
     return application
 
 
@@ -1039,13 +1147,25 @@ def ccavenue_payment_notification(encResp: str = Form(...), db: Session = Depend
 
 
 @app.get("/payments", response_model=list[schemas.PaymentRead])
-def list_payments(student_id: int | None = None, db: Session = Depends(get_db)):
-    return crud.list_payments(db, student_id=student_id)
+def list_payments(
+    student_id: int | None = None,
+    authorization: str | None = Header(None),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
+    scoped_student_id = authorized_receipt_student_id(db, student_id, authorization, token)
+    return crud.list_payments(db, student_id=scoped_student_id)
 
 
 @app.get("/receipts", response_model=list[schemas.PaymentReceiptRead])
-def list_receipts(student_id: int | None = None, db: Session = Depends(get_db)):
-    return crud.list_receipts(db, student_id=student_id)
+def list_receipts(
+    student_id: int | None = None,
+    authorization: str | None = Header(None),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
+    scoped_student_id = authorized_receipt_student_id(db, student_id, authorization, token)
+    return crud.list_receipts(db, student_id=scoped_student_id)
 
 
 @app.post("/receipts/generate", response_model=schemas.PaymentReceiptRead, status_code=status.HTTP_201_CREATED)
@@ -1091,18 +1211,30 @@ def verify_receipt(receipt_number: str, db: Session = Depends(get_db)):
 
 
 @app.get("/receipts/{receipt_id}", response_model=schemas.PaymentReceiptRead)
-def get_receipt(receipt_id: int, db: Session = Depends(get_db)):
+def get_receipt(
+    receipt_id: int,
+    authorization: str | None = Header(None),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
     receipt = crud.get_receipt(db, receipt_id)
     if not receipt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt not found.")
+    authorize_receipt_access(db, receipt, authorization, token)
     return receipt
 
 
 @app.get("/receipts/{receipt_id}/download")
-def download_receipt(receipt_id: int, db: Session = Depends(get_db)):
+def download_receipt(
+    receipt_id: int,
+    authorization: str | None = Header(None),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
     receipt = crud.get_receipt(db, receipt_id)
     if not receipt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt not found.")
+    authorize_receipt_access(db, receipt, authorization, token)
 
     # Regenerate first when possible so older receipts also get template/logo fixes.
     if receipt.payment:

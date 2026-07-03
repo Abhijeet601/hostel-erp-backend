@@ -63,6 +63,10 @@ class R2StorageService:
             return f"{self._public_path_prefix}{clean_key}"
         return clean_key
 
+    def key_from_public_url(self, url: str) -> str:
+        path = unquote(urlparse(url or "").path or "").strip("/")
+        return path
+
     def upload_file(
         self,
         data: bytes | BinaryIO,

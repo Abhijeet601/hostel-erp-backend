@@ -62,6 +62,9 @@ class Settings(BaseSettings):
         validation_alias="CCAVENUE_GATEWAY_URL",
     )
     ccavenue_currency: str = Field("INR", validation_alias="CCAVENUE_CURRENCY")
+    ccavenue_sub_account_id: str = Field("", validation_alias="CCAVENUE_SUB_ACCOUNT_ID")
+    ccavenue_registration_sub_account_id: str = Field("", validation_alias="CCAVENUE_REGISTRATION_SUB_ACCOUNT_ID")
+    ccavenue_hostel_sub_account_id: str = Field("", validation_alias="CCAVENUE_HOSTEL_SUB_ACCOUNT_ID")
     admin_username: str = Field("admin", validation_alias="ADMIN_USERNAME")
     admin_email: str = Field("admin@magadhmahilacollege.ac.in", validation_alias="ADMIN_EMAIL")
     admin_password: str = Field("ChangeThis@123", validation_alias="ADMIN_PASSWORD")

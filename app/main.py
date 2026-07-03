@@ -1024,6 +1024,15 @@ def ccavenue_decrypt(encrypted_text: str) -> str:
         ) from exc
 
 
+def ccavenue_sub_account_id(payment_type: str) -> str:
+    value = (payment_type or "").lower()
+    if "hostel" in value and settings.ccavenue_hostel_sub_account_id:
+        return settings.ccavenue_hostel_sub_account_id
+    if "registration" in value and settings.ccavenue_registration_sub_account_id:
+        return settings.ccavenue_registration_sub_account_id
+    return settings.ccavenue_sub_account_id
+
+
 def build_ccavenue_request(payment: models.Payment, application: models.HostelApplication) -> str:
     student = payment.student
     data = {
@@ -1042,6 +1051,9 @@ def build_ccavenue_request(payment: models.Payment, application: models.HostelAp
         "merchant_param3": payment.payment_type,
         "merchant_param4": application.application_no,
     }
+    sub_account_id = ccavenue_sub_account_id(payment.payment_type)
+    if sub_account_id:
+        data["sub_account_id"] = sub_account_id
     return urlencode(data)
 
 

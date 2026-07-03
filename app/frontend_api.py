@@ -675,6 +675,7 @@ def build_admin_dashboard(db: Session) -> dict[str, Any]:
     by_category: dict[str, int] = {}
     by_course: dict[str, int] = {}
     verified_students = 0
+    shortlisted_students = 0
     pending_applications = 0
     for application in applications:
         category = application.applied_category or "Unknown"
@@ -684,11 +685,14 @@ def build_admin_dashboard(db: Session) -> dict[str, Any]:
         status_value = (application.application_status or "").lower()
         if status_value in {"verified", "approved", "selected"}:
             verified_students += 1
+        if status_value in {"shortlisted", "selected"}:
+            shortlisted_students += 1
         if status_value in {"submitted", "pending", "draft"}:
             pending_applications += 1
     return {
         "total_applications": len(applications),
         "verified_students": verified_students,
+        "shortlisted_students": shortlisted_students,
         "pending_applications": pending_applications,
         "application_revenue": float(application_revenue),
         "hostel_revenue": float(hostel_revenue),

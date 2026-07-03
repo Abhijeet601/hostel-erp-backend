@@ -238,6 +238,7 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
     return {
         "id": student.id,
         "application_number": student.student_code,
+        "student_code": student.student_code,
         "name": student.name,
         "email": student.email,
         "mobile_number": student.mobile,
@@ -335,6 +336,75 @@ def combine_payment_status(registration_status: str, hostel_status: str) -> str:
     if "paid" in statuses:
         return "partially_paid"
     return "pending"
+
+
+def payment_type_key(value: str | None) -> str:
+    return "hostel" if "hostel" in (value or "").lower() else "registration"
+
+
+def receipt_type_key(value: str | None) -> str:
+    return "hostel" if value == "hostel_admission" else "registration"
+
+
+def serialize_admin_payment(payment: models.Payment) -> dict[str, Any]:
+    receipt = payment.receipts[0] if payment.receipts else None
+    application = payment.application
+    student = payment.student
+    payment_date = payment.paid_at or payment.created_at
+    return {
+        "id": payment.id,
+        "payment_id": payment.id,
+        "receipt_id": receipt.id if receipt else None,
+        "receipt_number": receipt.receipt_number if receipt else None,
+        "receipt_url": f"/receipts/{receipt.id}/download" if receipt else None,
+        "application_number": (
+            application.application_no if application else receipt.application_number if receipt else None
+        ),
+        "student_id": payment.student_id,
+        "student_code": student.student_code if student else None,
+        "student_name": student.name if student else None,
+        "student_email": student.email if student else None,
+        "student_mobile": student.mobile if student else None,
+        "payment_type": payment.payment_type,
+        "payment_type_key": payment_type_key(payment.payment_type),
+        "transaction_id": payment.transaction_no,
+        "tracking_id": payment.transaction_no,
+        "order_id": payment.transaction_no,
+        "amount": payment.amount,
+        "mode": payment.mode,
+        "status": payment.status,
+        "status_key": normalize_payment_state(payment.status),
+        "payment_date": payment_date,
+        "created_at": payment.created_at,
+    }
+
+
+def serialize_admin_receipt_only(receipt: models.PaymentReceipt) -> dict[str, Any]:
+    student = receipt.student
+    return {
+        "id": f"receipt-{receipt.id}",
+        "payment_id": None,
+        "receipt_id": receipt.id,
+        "receipt_number": receipt.receipt_number,
+        "receipt_url": f"/receipts/{receipt.id}/download",
+        "application_number": receipt.application_number,
+        "student_id": receipt.student_id,
+        "student_code": student.student_code if student else None,
+        "student_name": student.name if student else None,
+        "student_email": student.email if student else None,
+        "student_mobile": student.mobile if student else None,
+        "payment_type": "Hostel Admission Fee" if receipt.receipt_type == "hostel_admission" else "Registration Fee",
+        "payment_type_key": receipt_type_key(receipt.receipt_type),
+        "transaction_id": receipt.transaction_id,
+        "tracking_id": receipt.transaction_id,
+        "order_id": receipt.transaction_id,
+        "amount": receipt.amount,
+        "mode": None,
+        "status": "Generated",
+        "status_key": "paid",
+        "payment_date": receipt.generated_at,
+        "created_at": receipt.generated_at,
+    }
 
 
 def serialize_application_documents(application: models.HostelApplication | None, include_data: bool = True) -> dict[str, Any]:
@@ -952,7 +1022,15 @@ def frontend_admin_payments(
 ):
     require_admin(authorization, db)
     payments = crud.list_payments(db)
-    return {"items": payments}
+    items = [serialize_admin_payment(payment) for payment in payments]
+    payment_ids = {payment.id for payment in payments}
+    orphan_receipts = [
+        receipt for receipt in crud.list_receipts(db)
+        if not receipt.payment_id or receipt.payment_id not in payment_ids
+    ]
+    items.extend(serialize_admin_receipt_only(receipt) for receipt in orphan_receipts)
+    items.sort(key=lambda item: item.get("payment_date") or datetime.min, reverse=True)
+    return {"items": items}
 
 
 @router.get("/admin/hostel/rooms")

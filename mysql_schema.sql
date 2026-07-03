@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS payments (
   application_id INT NULL,
   payment_type VARCHAR(50) NOT NULL,
   amount DECIMAL(10,2) NOT NULL,
-  mode VARCHAR(30) NOT NULL,
+  mode VARCHAR(255) NOT NULL,
   status VARCHAR(30) NOT NULL DEFAULT 'Pending',
   paid_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

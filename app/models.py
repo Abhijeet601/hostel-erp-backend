@@ -129,7 +129,7 @@ class Payment(Base):
     application_id: Mapped[int | None] = mapped_column(ForeignKey("hostel_applications.id", ondelete="SET NULL"))
     payment_type: Mapped[str] = mapped_column(String(50))
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))
-    mode: Mapped[str] = mapped_column(String(30))
+    mode: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(30), default="Pending")
     paid_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

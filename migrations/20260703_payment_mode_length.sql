@@ -1,0 +1,2 @@
+ALTER TABLE payments
+  MODIFY mode VARCHAR(255) NOT NULL;

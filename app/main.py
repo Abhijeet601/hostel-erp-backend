@@ -89,6 +89,19 @@ def ensure_schema_updates() -> None:
                 )
             )
         }
+        payment_column_lengths = {
+            row[0]: row[1]
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'payments'
+                    """
+                )
+            )
+        }
         for column, ddl in required_application_columns.items():
             if column not in application_columns:
                 conn.execute(text(f"ALTER TABLE hostel_applications ADD COLUMN {column} {ddl}"))
@@ -98,6 +111,8 @@ def ensure_schema_updates() -> None:
         conn.execute(text("ALTER TABLE hostel_applications MODIFY admission_id VARCHAR(50) NULL"))
         conn.execute(text("ALTER TABLE hostel_applications MODIFY applied_category VARCHAR(20) NULL"))
         conn.execute(text("ALTER TABLE hostel_applications MODIFY student_photo_data LONGTEXT NULL"))
+        if (payment_column_lengths.get("mode") or 0) < 255:
+            conn.execute(text("ALTER TABLE payments MODIFY mode VARCHAR(255) NOT NULL"))
         conn.execute(
             text(
                 """

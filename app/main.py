@@ -679,11 +679,13 @@ def update_application_status(
 
 
 @app.get("/settings/application", response_model=schemas.ApplicationSettingsRead)
+@app.get("/api/settings/application", response_model=schemas.ApplicationSettingsRead)
 def get_application_settings(db: Session = Depends(get_db)):
     return settings_response(crud.get_application_settings(db))
 
 
 @app.put("/settings/application", response_model=schemas.ApplicationSettingsRead)
+@app.put("/api/settings/application", response_model=schemas.ApplicationSettingsRead)
 def update_application_settings(payload: schemas.ApplicationSettingsUpdate, db: Session = Depends(get_db)):
     if payload.admission_start_date and payload.admission_end_date and payload.admission_start_date > payload.admission_end_date:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Admission start date cannot be after last date.")

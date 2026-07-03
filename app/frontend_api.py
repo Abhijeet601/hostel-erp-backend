@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import date
+import json
+import secrets
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app import crud, models, schemas
@@ -63,6 +65,10 @@ class FrontendAllocateHostelRequest(BaseModel):
     room_number: str | None = None
 
 
+PASSWORD_RESET_TOKEN_EXPIRE_MINUTES = 15
+_forgot_password_attempts: dict[str, list[datetime]] = {}
+
+
 def student_token(student_id: int) -> str:
     return f"mmc-student-{student_id}"
 
@@ -96,7 +102,7 @@ def require_student(authorization: str | None, db: Session) -> models.Student:
     if not parsed or parsed[0] != "student":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Student login required.")
     student = crud.get_student(db, parsed[1])
-    if not student:
+    if not student or not student.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Student session expired.")
     return student
 
@@ -165,6 +171,9 @@ def serialize_student_login(student: models.Student, db: Session) -> dict[str, A
         "token": student_token(student.id),
         "application_completed": application_completed(application),
         "application_number": student.student_code,
+        "student_id": student.id,
+        "student_name": student.name,
+        "force_password_change": student.force_password_change,
         "user": {
             "id": student.id,
             "student_code": student.student_code,
@@ -176,6 +185,7 @@ def serialize_student_login(student: models.Student, db: Session) -> dict[str, A
             "mobile_number": student.mobile,
             "date_of_birth": student.date_of_birth,
             "application_completed": application_completed(application),
+            "force_password_change": student.force_password_change,
         },
     }
 
@@ -226,7 +236,80 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
         "preferred_hostel": hostel_name,
         "room_number": room_number,
         "application_id": application.id if application else None,
+        "account_active": student.is_active,
+        "force_password_change": student.force_password_change,
+        "aadhaar_number": application.aadhar_number if application else None,
+        "summary": {
+            "application_type": application.application_type if application else None,
+            "admission_application_id": application.admission_id if application else None,
+            "aadhar_number": application.aadhar_number if application else None,
+            "aadhaar_number": application.aadhar_number if application else None,
+            "aggregate_percentage": application.percentage if application else None,
+        },
     }
+
+
+def clean_text(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def normalize_mobile(value: str | None) -> str | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    digits = "".join(char for char in text if char.isdigit())
+    return digits or text
+
+
+def normalize_aadhaar(value: str | None) -> str | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    digits = "".join(char for char in text if char.isdigit())
+    return digits or text
+
+
+def log_activity(
+    db: Session,
+    *,
+    entity_type: str,
+    entity_id: str | int,
+    action: str,
+    admin_id: int | None = None,
+    old_values: dict[str, Any] | None = None,
+    new_values: dict[str, Any] | None = None,
+) -> None:
+    db.add(
+        models.ActivityLog(
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            action=action,
+            admin_id=admin_id,
+            old_values=json.dumps(old_values or {}, default=str),
+            new_values=json.dumps(new_values or {}, default=str),
+        )
+    )
+
+
+def send_account_email(recipient: str | None, subject: str, body: str) -> str:
+    if not recipient:
+        return "skipped"
+    return "skipped"
+
+
+def enforce_forgot_password_rate_limit(request: Request, email: str) -> None:
+    now = datetime.utcnow()
+    client = request.client.host if request.client else "anonymous"
+    key = f"{client}:{email.lower()}"
+    attempts = [item for item in _forgot_password_attempts.get(key, []) if now - item < timedelta(minutes=15)]
+    if len(attempts) >= 5:
+        _forgot_password_attempts[key] = attempts
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many reset attempts. Please try again later.")
+    attempts.append(now)
+    _forgot_password_attempts[key] = attempts
 
 
 def serialize_application_form(student: models.Student, application: models.HostelApplication | None) -> dict[str, Any]:
@@ -456,6 +539,15 @@ def login_student_or_admin(payload: FrontendLoginRequest, db: Session) -> dict[s
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid login credentials.")
 
 
+def latest_application_for_aadhaar(student: models.Student, aadhaar_number: str) -> models.HostelApplication | None:
+    normalized = normalize_aadhaar(aadhaar_number)
+    applications = sorted(student.applications, key=lambda item: item.updated_at or item.created_at or datetime.min, reverse=True)
+    for application in applications:
+        if normalize_aadhaar(application.aadhar_number) == normalized:
+            return application
+    return None
+
+
 def register_student_compat(payload: FrontendRegisterRequest, db: Session) -> dict[str, Any]:
     from app.main import save_or_409
 
@@ -529,6 +621,88 @@ def frontend_register(payload: FrontendRegisterRequest, db: Session = Depends(ge
 @router.post("/api/login")
 def frontend_login(payload: FrontendLoginRequest, db: Session = Depends(get_db)):
     return login_student_or_admin(payload, db)
+
+
+@router.post("/forgot-password")
+@router.post("/api/forgot-password")
+def frontend_forgot_password(
+    payload: schemas.StudentForgotPasswordRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    email = str(payload.email).strip().lower()
+    aadhaar_number = normalize_aadhaar(payload.aadhaar_number)
+    enforce_forgot_password_rate_limit(request, email)
+    student = db.scalar(select(models.Student).where(models.Student.email == email, models.Student.is_active.is_(True)))
+    application = latest_application_for_aadhaar(student, aadhaar_number) if student else None
+    if not student or not application:
+        log_activity(
+            db,
+            entity_type="student",
+            entity_id="unknown",
+            action="password_reset_request_failed",
+            new_values={"email": email, "reason": "invalid_email_or_aadhaar"},
+        )
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Email or Aadhaar Number")
+
+    token = secrets.token_urlsafe(32)
+    now = datetime.utcnow()
+    student.reset_token_hash = crud.hash_reset_token(token)
+    student.reset_token_expires_at = now + timedelta(minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES)
+    student.reset_requested_at = now
+    student.reset_last_attempt_at = now
+    student.reset_attempt_count = int(student.reset_attempt_count or 0) + 1
+    db.add(student)
+    email_status = send_account_email(
+        student.email,
+        "Student password reset link",
+        f"Use this reset token within {PASSWORD_RESET_TOKEN_EXPIRE_MINUTES} minutes: {token}",
+    )
+    log_activity(
+        db,
+        entity_type="student",
+        entity_id=student.id,
+        action="password_reset_requested",
+        new_values={"email": email, "expires_at": student.reset_token_expires_at, "email_status": email_status},
+    )
+    db.commit()
+    message = "Password Reset Email Sent" if email_status != "skipped" else f"Password reset token: {token}"
+    return {"message": message}
+
+
+@router.post("/complete-password-reset")
+@router.post("/api/complete-password-reset")
+def frontend_complete_password_reset(
+    payload: schemas.StudentCompletePasswordResetRequest,
+    db: Session = Depends(get_db),
+):
+    password_error = crud.validate_password_strength(payload.new_password, payload.confirm_password)
+    if password_error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=password_error)
+    token_hash = crud.hash_reset_token(payload.token)
+    student = db.scalar(select(models.Student).where(models.Student.reset_token_hash == token_hash))
+    now = datetime.utcnow()
+    if not student or not student.reset_token_expires_at:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired password reset link.")
+    if student.reset_token_expires_at < now:
+        student.reset_token_hash = None
+        student.reset_token_expires_at = None
+        db.add(student)
+        log_activity(db, entity_type="student", entity_id=student.id, action="password_reset_expired")
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password reset link has expired.")
+
+    student.password_hash = crud.hash_password(payload.new_password)
+    student.force_password_change = False
+    student.reset_token_hash = None
+    student.reset_token_expires_at = None
+    student.reset_attempt_count = 0
+    student.reset_last_attempt_at = None
+    db.add(student)
+    log_activity(db, entity_type="student", entity_id=student.id, action="password_reset_completed")
+    db.commit()
+    return {"message": "Password Changed Successfully"}
 
 
 @router.post("/api/admin/login")
@@ -737,6 +911,155 @@ def frontend_allocate_hostel(
     return serialize_admin_student(student, application) if student else {"status": "ok"}
 
 
+@router.patch("/admin/students/{student_id}/account", response_model=schemas.AccountActionResponse)
+@router.patch("/api/admin/students/{student_id}/account", response_model=schemas.AccountActionResponse)
+def frontend_update_student_account(
+    student_id: int,
+    payload: schemas.AdminStudentAccountUpdate,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    admin = require_admin(authorization, db)
+    student = crud.get_student(db, student_id)
+    if not student:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
+    application = crud.get_latest_student_application(db, student.id)
+
+    student_code = clean_text(payload.application_number or payload.student_code)
+    mobile = normalize_mobile(payload.mobile_number or payload.mobile)
+    aadhaar = normalize_aadhaar(payload.aadhaar_number or payload.aadhar_number)
+    course = clean_text(payload.course_name or payload.course)
+    email = str(payload.email).strip().lower() if payload.email else None
+
+    duplicate_checks = []
+    if student_code and student_code != student.student_code:
+        duplicate_checks.append(models.Student.student_code == student_code)
+    if email and email != student.email:
+        duplicate_checks.append(models.Student.email == email)
+    if mobile and mobile != student.mobile:
+        duplicate_checks.append(models.Student.mobile == mobile)
+    if duplicate_checks:
+        existing = db.scalar(select(models.Student).where(models.Student.id != student.id, or_(*duplicate_checks)))
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Student ID, email, or mobile number is already used by another student.",
+            )
+
+    old_values = {
+        "student_code": student.student_code,
+        "name": student.name,
+        "email": student.email,
+        "mobile": student.mobile,
+        "is_active": student.is_active,
+        "force_password_change": student.force_password_change,
+        "aadhar_number": application.aadhar_number if application else None,
+        "course": application.course if application else student.course,
+        "session": application.session if application else student.session,
+    }
+
+    if student_code:
+        student.student_code = student_code
+    if payload.name is not None:
+        student.name = clean_text(payload.name) or student.name
+    if email:
+        student.email = email
+    if mobile:
+        student.mobile = mobile
+    if course is not None:
+        student.course = course
+    if payload.session is not None:
+        student.session = clean_text(payload.session)
+    if payload.is_active is not None:
+        student.is_active = payload.is_active
+    if payload.force_password_change is not None:
+        student.force_password_change = payload.force_password_change
+
+    if application:
+        if student.name:
+            pass
+        if email:
+            pass
+        if mobile:
+            pass
+        if aadhaar:
+            application.aadhar_number = aadhaar
+        if course is not None:
+            application.course = course
+        if payload.session is not None:
+            application.session = clean_text(payload.session)
+        db.add(application)
+
+    db.add(student)
+    log_activity(
+        db,
+        entity_type="student",
+        entity_id=student.id,
+        action="account_update",
+        admin_id=admin.id,
+        old_values=old_values,
+        new_values={
+            "student_code": student.student_code,
+            "name": student.name,
+            "email": student.email,
+            "mobile": student.mobile,
+            "is_active": student.is_active,
+            "force_password_change": student.force_password_change,
+            "aadhar_number": application.aadhar_number if application else None,
+            "course": application.course if application else student.course,
+            "session": application.session if application else student.session,
+        },
+    )
+    db.commit()
+    return schemas.AccountActionResponse(message="Account Updated Successfully")
+
+
+@router.post("/admin/students/{student_id}/reset-password", response_model=schemas.AccountActionResponse)
+@router.post("/api/admin/students/{student_id}/reset-password", response_model=schemas.AccountActionResponse)
+def frontend_admin_reset_student_password(
+    student_id: int,
+    payload: schemas.AdminStudentPasswordReset,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    admin = require_admin(authorization, db)
+    student = crud.get_student(db, student_id)
+    if not student:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
+    password = crud.generate_temporary_password() if payload.generate_temporary or not payload.password else payload.password
+    password_error = crud.validate_password_strength(password)
+    if password_error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=password_error)
+    student.password_hash = crud.hash_password(password)
+    student.force_password_change = payload.force_password_change
+    student.reset_token_hash = None
+    student.reset_token_expires_at = None
+    student.reset_attempt_count = 0
+    student.reset_last_attempt_at = None
+    db.add(student)
+    email_status = None
+    if payload.send_email:
+        email_status = send_account_email(
+            student.email,
+            "Student password reset",
+            f"Your temporary password is {password}.",
+        )
+    log_activity(
+        db,
+        entity_type="student",
+        entity_id=student.id,
+        action="admin_password_reset",
+        admin_id=admin.id,
+        new_values={"force_password_change": student.force_password_change, "email_status": email_status},
+    )
+    db.commit()
+    return schemas.AccountActionResponse(
+        message="Password Reset Successfully",
+        temporary_password=password if payload.generate_temporary else None,
+        email_status=email_status,
+    )
+
+
 @router.delete("/admin/students/{student_id}")
 @router.delete("/api/admin/students/{student_id}")
 def frontend_delete_student(
@@ -748,6 +1071,16 @@ def frontend_delete_student(
     student = crud.get_student(db, student_id)
     if not student:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
-    db.delete(student)
+    student.is_active = False
+    student.password_hash = None
+    db.add(student)
+    log_activity(
+        db,
+        entity_type="student",
+        entity_id=student.id,
+        action="account_deactivated",
+        admin_id=require_admin(authorization, db).id,
+        new_values={"is_active": False},
+    )
     db.commit()
-    return {"status": "deleted"}
+    return {"status": "deactivated", "message": "Student ID deleted successfully. Login access has been revoked."}

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app import crud, models, receipt_service, schemas
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db
+from app.frontend_api import router as frontend_router
 from app.r2_storage import get_r2_service
 
 
@@ -31,6 +32,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(frontend_router)
+
 
 @app.on_event("startup")
 def create_tables() -> None:
@@ -46,6 +49,36 @@ def remove_demo_payment_data() -> None:
 
 def ensure_schema_updates() -> None:
     if engine.dialect.name != "mysql":
+        required_student_columns = {
+            "is_active": "BOOLEAN NOT NULL DEFAULT 1",
+            "force_password_change": "BOOLEAN NOT NULL DEFAULT 0",
+            "reset_token_hash": "VARCHAR(255)",
+            "reset_token_expires_at": "DATETIME",
+            "reset_requested_at": "DATETIME",
+            "reset_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "reset_last_attempt_at": "DATETIME",
+        }
+        with engine.begin() as conn:
+            student_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(students)"))}
+            for column, ddl in required_student_columns.items():
+                if column not in student_columns:
+                    conn.execute(text(f"ALTER TABLE students ADD COLUMN {column} {ddl}"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS activity_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        entity_type VARCHAR(50),
+                        entity_id VARCHAR(50),
+                        action VARCHAR(80),
+                        old_values TEXT NULL,
+                        new_values TEXT NULL,
+                        admin_id INTEGER NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+            )
         return
     required_application_columns = {
         "application_status": "VARCHAR(30) NOT NULL DEFAULT 'Draft'",
@@ -61,6 +94,15 @@ def ensure_schema_updates() -> None:
     required_room_columns = {
         "occupied_beds": "INT NOT NULL DEFAULT 0",
         "available_beds": "INT NOT NULL DEFAULT 3",
+    }
+    required_student_columns = {
+        "is_active": "BOOLEAN NOT NULL DEFAULT TRUE",
+        "force_password_change": "BOOLEAN NOT NULL DEFAULT FALSE",
+        "reset_token_hash": "VARCHAR(255) NULL",
+        "reset_token_expires_at": "DATETIME NULL",
+        "reset_requested_at": "DATETIME NULL",
+        "reset_attempt_count": "INT NOT NULL DEFAULT 0",
+        "reset_last_attempt_at": "DATETIME NULL",
     }
     with engine.begin() as conn:
         application_columns = {
@@ -102,12 +144,47 @@ def ensure_schema_updates() -> None:
                 )
             )
         }
+        student_columns = {
+            row[0]
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT COLUMN_NAME
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'students'
+                    """
+                )
+            )
+        }
         for column, ddl in required_application_columns.items():
             if column not in application_columns:
                 conn.execute(text(f"ALTER TABLE hostel_applications ADD COLUMN {column} {ddl}"))
         for column, ddl in required_room_columns.items():
             if column not in room_columns:
                 conn.execute(text(f"ALTER TABLE rooms ADD COLUMN {column} {ddl}"))
+        for column, ddl in required_student_columns.items():
+            if column not in student_columns:
+                conn.execute(text(f"ALTER TABLE students ADD COLUMN {column} {ddl}"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS activity_logs (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    entity_type VARCHAR(50),
+                    entity_id VARCHAR(50),
+                    action VARCHAR(80),
+                    old_values TEXT NULL,
+                    new_values TEXT NULL,
+                    admin_id INT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    INDEX ix_activity_logs_entity_type (entity_type),
+                    INDEX ix_activity_logs_entity_id (entity_id),
+                    INDEX ix_activity_logs_action (action)
+                )
+                """
+            )
+        )
         conn.execute(text("ALTER TABLE hostel_applications MODIFY admission_id VARCHAR(50) NULL"))
         conn.execute(text("ALTER TABLE hostel_applications MODIFY applied_category VARCHAR(20) NULL"))
         conn.execute(text("ALTER TABLE hostel_applications MODIFY student_photo_data LONGTEXT NULL"))

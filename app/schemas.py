@@ -38,10 +38,52 @@ class StudentUpdate(BaseModel):
     category: str | None = None
     course: str | None = None
     session: str | None = None
+    is_active: bool | None = None
+    force_password_change: bool | None = None
 
 
 class StudentPasswordUpdate(BaseModel):
     password: str = Field(..., min_length=8, max_length=128)
+
+
+class StudentForgotPasswordRequest(BaseModel):
+    email: EmailStr
+    aadhaar_number: str = Field(..., pattern=r"^\d{12}$")
+
+
+class StudentCompletePasswordResetRequest(BaseModel):
+    token: str = Field(..., min_length=16, max_length=256)
+    new_password: str = Field(..., min_length=8, max_length=128)
+    confirm_password: str = Field(..., min_length=8, max_length=128)
+
+
+class AdminStudentAccountUpdate(BaseModel):
+    application_number: str | None = Field(None, min_length=3, max_length=32)
+    student_code: str | None = Field(None, min_length=3, max_length=32)
+    name: str | None = Field(None, max_length=120)
+    email: EmailStr | None = None
+    mobile_number: str | None = Field(None, pattern=r"^\d{10}$")
+    mobile: str | None = Field(None, pattern=r"^\d{10}$")
+    aadhaar_number: str | None = Field(None, pattern=r"^\d{12}$")
+    aadhar_number: str | None = Field(None, pattern=r"^\d{12}$")
+    course_name: str | None = Field(None, max_length=80)
+    course: str | None = Field(None, max_length=80)
+    session: str | None = Field(None, max_length=20)
+    is_active: bool | None = None
+    force_password_change: bool | None = None
+
+
+class AdminStudentPasswordReset(BaseModel):
+    password: str | None = Field(None, min_length=8, max_length=128)
+    generate_temporary: bool = True
+    force_password_change: bool = True
+    send_email: bool = False
+
+
+class AccountActionResponse(BaseModel):
+    message: str
+    temporary_password: str | None = None
+    email_status: str | None = None
 
 
 class StudentRead(StudentBase):
@@ -49,6 +91,8 @@ class StudentRead(StudentBase):
     student_code: str
     created_at: datetime
     updated_at: datetime
+    is_active: bool = True
+    force_password_change: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

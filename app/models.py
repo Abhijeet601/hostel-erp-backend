@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -17,6 +17,13 @@ class Student(Base):
     email: Mapped[str] = mapped_column(String(160), unique=True, index=True)
     mobile: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    force_password_change: Mapped[bool] = mapped_column(Boolean, default=False)
+    reset_token_hash: Mapped[str | None] = mapped_column(String(255), index=True)
+    reset_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    reset_requested_at: Mapped[datetime | None] = mapped_column(DateTime)
+    reset_attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    reset_last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime)
     date_of_birth: Mapped[date | None] = mapped_column(Date)
     gender: Mapped[str | None] = mapped_column(String(20))
     category: Mapped[str | None] = mapped_column(String(20))
@@ -172,6 +179,19 @@ class AdminUser(Base):
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ActivityLog(Base):
+    __tablename__ = "activity_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    entity_type: Mapped[str] = mapped_column(String(50), index=True)
+    entity_id: Mapped[str] = mapped_column(String(50), index=True)
+    action: Mapped[str] = mapped_column(String(80), index=True)
+    old_values: Mapped[str | None] = mapped_column(Text)
+    new_values: Mapped[str | None] = mapped_column(Text)
+    admin_id: Mapped[int | None] = mapped_column(ForeignKey("admin_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class AdmissionPaymentSettings(Base):

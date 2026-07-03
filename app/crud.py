@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import secrets
+import string
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
@@ -22,6 +23,34 @@ def hash_password(password: str) -> str:
         PASSWORD_HASH_ITERATIONS,
     ).hex()
     return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt}${digest}"
+
+
+def validate_password_strength(password: str, confirm_password: str | None = None) -> str | None:
+    if confirm_password is not None and password != confirm_password:
+        return "New password and confirm password do not match."
+    if len(password or "") < 8:
+        return "Password must be at least 8 characters long."
+    if not any(char.isupper() for char in password):
+        return "Password must include at least one uppercase letter."
+    if not any(char.islower() for char in password):
+        return "Password must include at least one lowercase letter."
+    if not any(char.isdigit() for char in password):
+        return "Password must include at least one number."
+    if not any(char in string.punctuation for char in password):
+        return "Password must include at least one special character."
+    return None
+
+
+def generate_temporary_password(length: int = 12) -> str:
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    while True:
+        password = "".join(secrets.choice(alphabet) for _ in range(max(length, 10)))
+        if validate_password_strength(password) is None:
+            return password
+
+
+def hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def verify_password(password: str, password_hash: str) -> bool:
@@ -66,6 +95,9 @@ def generate_student_code(db: Session) -> str:
 
 
 def register_student(db: Session, payload: schemas.StudentRegister) -> models.Student:
+    password_error = validate_password_strength(payload.password)
+    if password_error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=password_error)
     student = models.Student(
         student_code=generate_student_code(db),
         name=payload.name,
@@ -97,7 +129,11 @@ def update_student(db: Session, student: models.Student, payload: schemas.Studen
 
 
 def update_student_password(db: Session, student: models.Student, password: str) -> models.Student:
+    password_error = validate_password_strength(password)
+    if password_error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=password_error)
     student.password_hash = hash_password(password)
+    student.force_password_change = False
     db.commit()
     db.refresh(student)
     return student
@@ -112,7 +148,7 @@ def authenticate_student(db: Session, identifier: str, password: str) -> models.
         )
     )
     student = db.scalar(stmt)
-    if not student or not student.password_hash or not verify_password(password, student.password_hash):
+    if not student or not student.is_active or not student.password_hash or not verify_password(password, student.password_hash):
         return None
     return student
 

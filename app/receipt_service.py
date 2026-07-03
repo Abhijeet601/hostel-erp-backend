@@ -271,6 +271,23 @@ def render_html_pdf(template_name: str, context: dict, path: Path) -> None:
     path.write_bytes(pdf_bytes)
 
 
+def build_receipt_pdf_bytes(
+    receipt: models.PaymentReceipt,
+    payment: models.Payment,
+    receipt_type: str | None = None,
+) -> bytes:
+    receipt_type = receipt_type or receipt.receipt_type or infer_receipt_type(payment)
+    template_name = (
+        "hostel_payment_receipt.html" if receipt_type == "hostel_admission"
+        else "registration_receipt.html"
+    )
+    context = (
+        hostel_context(receipt, payment) if receipt_type == "hostel_admission"
+        else registration_context(receipt, payment)
+    )
+    return render_html_pdf_to_bytes(template_name, context)
+
+
 def upload_receipt_to_r2(receipt_number: str, pdf_bytes: bytes) -> str:
     """Upload receipt PDF to Cloudflare R2 and return the public URL."""
     r2 = get_r2_service()
@@ -331,26 +348,17 @@ def generate_receipt_pdf(
 
     receipt.qr_code = verification_url(receipt.receipt_number)
 
-    # Render PDF to bytes
-    template_name = (
-        "hostel_payment_receipt.html" if receipt_type == "hostel_admission"
-        else "registration_receipt.html"
-    )
-    context = (
-        hostel_context(receipt, payment) if receipt_type == "hostel_admission"
-        else registration_context(receipt, payment)
-    )
-    pdf_bytes = render_html_pdf_to_bytes(template_name, context)
+    pdf_bytes = build_receipt_pdf_bytes(receipt, payment, receipt_type)
+
+    local_path = receipt_pdf_path(receipt.receipt_number)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(pdf_bytes)
 
     # Upload to R2 if available
     r2_url = upload_receipt_to_r2(receipt.receipt_number, pdf_bytes)
     if r2_url:
         receipt.pdf_url = r2_url
     else:
-        # Fallback: save locally and use API download URL
-        local_path = receipt_pdf_path(receipt.receipt_number)
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        local_path.write_bytes(pdf_bytes)
         receipt.pdf_url = receipt_public_url(receipt)
 
     db.commit()

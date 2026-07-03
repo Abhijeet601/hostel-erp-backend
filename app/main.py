@@ -1380,6 +1380,12 @@ def download_receipt(
     if receipt.payment:
         updated_receipt = receipt_service.generate_receipt_pdf(db, receipt.payment, receipt.receipt_type)
         receipt = updated_receipt
+        pdf_bytes = receipt_service.build_receipt_pdf_bytes(receipt, receipt.payment, receipt.receipt_type)
+        return StreamingResponse(
+            BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{receipt.receipt_number}.pdf"'},
+        )
 
     # Try to get PDF bytes from R2 or local storage
     pdf_bytes = receipt_service.get_receipt_pdf_bytes(receipt.receipt_number)

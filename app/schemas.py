@@ -177,6 +177,10 @@ class ApplicationBase(BaseModel):
     religion: str | None = None
     nationality: str | None = None
     student_photo_data: str | None = None
+    aadhar_card_data: str | None = None
+    admission_receipt_data: str | None = None
+    income_certificate_data: str | None = None
+    caste_certificate_data: str | None = None
     intermediate_college: str | None = None
     board: str | None = None
     previous_course: str | None = None

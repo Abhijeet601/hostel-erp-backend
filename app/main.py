@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app import crud, models, receipt_service, schemas
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db
+from app.document_storage import upload_application_documents
 from app.frontend_api import router as frontend_router
 from app.r2_storage import get_r2_service
 
@@ -70,11 +71,21 @@ def ensure_schema_updates() -> None:
             "reset_attempt_count": "INTEGER NOT NULL DEFAULT 0",
             "reset_last_attempt_at": "DATETIME",
         }
+        required_application_columns = {
+            "aadhar_card_data": "TEXT",
+            "admission_receipt_data": "TEXT",
+            "income_certificate_data": "TEXT",
+            "caste_certificate_data": "TEXT",
+        }
         with engine.begin() as conn:
             student_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(students)"))}
             for column, ddl in required_student_columns.items():
                 if column not in student_columns:
                     conn.execute(text(f"ALTER TABLE students ADD COLUMN {column} {ddl}"))
+            application_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(hostel_applications)"))}
+            for column, ddl in required_application_columns.items():
+                if column not in application_columns:
+                    conn.execute(text(f"ALTER TABLE hostel_applications ADD COLUMN {column} {ddl}"))
             conn.execute(
                 text(
                     """
@@ -102,6 +113,10 @@ def ensure_schema_updates() -> None:
         "bed": "VARCHAR(20) NULL",
         "allocation_date": "DATE NULL",
         "allocation_status": "VARCHAR(30) NOT NULL DEFAULT 'allocated'",
+        "aadhar_card_data": "LONGTEXT NULL",
+        "admission_receipt_data": "LONGTEXT NULL",
+        "income_certificate_data": "LONGTEXT NULL",
+        "caste_certificate_data": "LONGTEXT NULL",
     }
     required_room_columns = {
         "occupied_beds": "INT NOT NULL DEFAULT 0",
@@ -200,6 +215,10 @@ def ensure_schema_updates() -> None:
         conn.execute(text("ALTER TABLE hostel_applications MODIFY admission_id VARCHAR(50) NULL"))
         conn.execute(text("ALTER TABLE hostel_applications MODIFY applied_category VARCHAR(20) NULL"))
         conn.execute(text("ALTER TABLE hostel_applications MODIFY student_photo_data LONGTEXT NULL"))
+        conn.execute(text("ALTER TABLE hostel_applications MODIFY aadhar_card_data LONGTEXT NULL"))
+        conn.execute(text("ALTER TABLE hostel_applications MODIFY admission_receipt_data LONGTEXT NULL"))
+        conn.execute(text("ALTER TABLE hostel_applications MODIFY income_certificate_data LONGTEXT NULL"))
+        conn.execute(text("ALTER TABLE hostel_applications MODIFY caste_certificate_data LONGTEXT NULL"))
         if (payment_column_lengths.get("mode") or 0) < 255:
             conn.execute(text("ALTER TABLE payments MODIFY mode VARCHAR(255) NOT NULL"))
         conn.execute(
@@ -581,7 +600,8 @@ def create_application(payload: schemas.ApplicationCreate, db: Session = Depends
             status_code=status.HTTP_409_CONFLICT,
             detail="A hostel application already exists for this session.",
         )
-    return save_or_409(lambda: crud.create_application(db, payload))
+    data = upload_application_documents(data, student_id=payload.student_id)
+    return save_or_409(lambda: crud.create_application(db, schemas.ApplicationCreate.model_validate(data)))
 
 
 @app.post("/applications/validate-step")
@@ -614,6 +634,11 @@ def save_application_draft(payload: schemas.ApplicationDraftSave, db: Session = 
                 status_code=status.HTTP_409_CONFLICT,
                 detail="A hostel application already exists for this session.",
             )
+    data = upload_application_documents(
+        data,
+        student_id=student.id,
+        application_id=existing_draft.id if existing_draft else None,
+    )
     return save_or_409(lambda: crud.save_application_draft(db, student, payload.current_step, data))
 
 
@@ -646,6 +671,7 @@ def submit_application(application_id: int, payload: schemas.ApplicationDraftSav
     })
     for step in range(1, 8):
         validate_step_payload(step, merged)
+    data = upload_application_documents(data, student_id=application.student_id, application_id=application.id)
     return save_or_409(lambda: crud.submit_application(db, application, data))
 
 

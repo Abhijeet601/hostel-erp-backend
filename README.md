@@ -116,6 +116,18 @@ For local development from your PC, use the public proxy URL instead:
 DATABASE_URL=mysql+pymysql://root:<password>@reseau.proxy.rlwy.net:35994/railway
 ```
 
+For uploaded student documents, configure Cloudflare R2 in Railway:
+
+```text
+R2_ACCOUNT_ID=<cloudflare-account-id>
+R2_ACCESS_KEY_ID=<r2-access-key-id>
+R2_SECRET_ACCESS_KEY=<r2-secret-access-key>
+R2_BUCKET_NAME=<bucket-name>
+R2_PUBLIC_URL=https://pub-56b2773adb554e88a3d5fbc74f0167bc.r2.dev/mmc-uploads
+```
+
+When these variables are set, application uploads are stored in R2 and the database stores the public document URL.
+
 The service health check is:
 
 ```text

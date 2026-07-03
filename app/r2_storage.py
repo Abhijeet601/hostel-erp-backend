@@ -10,6 +10,7 @@ import logging
 from functools import lru_cache
 from io import BytesIO
 from typing import BinaryIO
+from urllib.parse import urlparse, unquote
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -28,6 +29,7 @@ class R2StorageService:
         self._enabled = settings.r2_enabled
         self._bucket = settings.r2_bucket_name
         self._public_base_url = settings.r2_public_base_url
+        self._public_path_prefix = self._path_prefix_from_public_url(self._public_base_url)
 
         if self._enabled:
             self._client = boto3.client(
@@ -50,6 +52,17 @@ class R2StorageService:
     def enabled(self) -> bool:
         return self._enabled
 
+    @staticmethod
+    def _path_prefix_from_public_url(public_url: str) -> str:
+        path = unquote(urlparse(public_url).path or "").strip("/")
+        return f"{path}/" if path else ""
+
+    def normalize_key(self, key: str) -> str:
+        clean_key = key.strip().lstrip("/")
+        if self._public_path_prefix and not clean_key.startswith(self._public_path_prefix):
+            return f"{self._public_path_prefix}{clean_key}"
+        return clean_key
+
     def upload_file(
         self,
         data: bytes | BinaryIO,
@@ -61,6 +74,7 @@ class R2StorageService:
             raise RuntimeError("R2 storage is not configured.")
 
         body = data if isinstance(data, bytes) else data.read()
+        key = self.normalize_key(key)
         self._client.put_object(
             Bucket=self._bucket,
             Key=key,
@@ -84,6 +98,7 @@ class R2StorageService:
         if not self._enabled or not self._client:
             raise RuntimeError("R2 storage is not configured.")
 
+        key = self.normalize_key(key)
         try:
             response = self._client.get_object(Bucket=self._bucket, Key=key)
             return response["Body"].read()
@@ -104,6 +119,7 @@ class R2StorageService:
         if not self._enabled or not self._client:
             raise RuntimeError("R2 storage is not configured.")
 
+        key = self.normalize_key(key)
         self._client.delete_object(Bucket=self._bucket, Key=key)
         logger.info("Deleted from R2: %s", key)
 
@@ -112,6 +128,7 @@ class R2StorageService:
         if not self._enabled or not self._client:
             return False
 
+        key = self.normalize_key(key)
         try:
             self._client.head_object(Bucket=self._bucket, Key=key)
             return True
@@ -123,6 +140,7 @@ class R2StorageService:
         if not self._enabled or not self._client:
             raise RuntimeError("R2 storage is not configured.")
 
+        key = self.normalize_key(key)
         return self._client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self._bucket, "Key": key},
@@ -136,7 +154,10 @@ class R2StorageService:
         use that. Otherwise fall back to a presigned URL.
         """
         if self._public_base_url:
-            return f"{self._public_base_url}/{key}"
+            clean_key = self.normalize_key(key)
+            if self._public_path_prefix and clean_key.startswith(self._public_path_prefix):
+                clean_key = clean_key[len(self._public_path_prefix):]
+            return f"{self._public_base_url}/{clean_key}"
         if self._enabled:
             return self.generate_presigned_url(key)
         return ""

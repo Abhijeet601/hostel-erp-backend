@@ -50,7 +50,10 @@ class Settings(BaseSettings):
     r2_access_key_id: str = Field("", validation_alias="R2_ACCESS_KEY_ID")
     r2_secret_access_key: str = Field("", validation_alias="R2_SECRET_ACCESS_KEY")
     r2_bucket_name: str = Field("mmc-erp-files", validation_alias="R2_BUCKET_NAME")
-    r2_public_url: str = Field("", validation_alias="R2_PUBLIC_URL")
+    r2_public_url: str = Field(
+        "https://pub-56b2773adb554e88a3d5fbc74f0167bc.r2.dev/mmc-uploads",
+        validation_alias="R2_PUBLIC_URL",
+    )
     ccavenue_merchant_id: str = Field("", validation_alias="CCAVENUE_MERCHANT_ID")
     ccavenue_access_code: str = Field("", validation_alias="CCAVENUE_ACCESS_CODE")
     ccavenue_working_key: str = Field("", validation_alias="CCAVENUE_WORKING_KEY")

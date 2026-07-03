@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app import crud, models, schemas
 from app.database import get_db
+from app.document_storage import upload_application_documents
 
 
 router = APIRouter(tags=["frontend-compat"])
@@ -223,6 +224,7 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
             shortlist_status = "shortlisted"
     hostel_name = application.hostel.name if application and application.hostel else None
     room_number = application.room.room_number if application and application.room else None
+    documents = serialize_application_documents(application, include_data=False)
     return {
         "id": student.id,
         "application_number": student.student_code,
@@ -249,8 +251,23 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
             "aadhar_number": application.aadhar_number if application else None,
             "aadhaar_number": application.aadhar_number if application else None,
             "aggregate_percentage": application.percentage if application else None,
+            "documents": documents,
+            **documents,
         },
     }
+
+
+def serialize_application_documents(application: models.HostelApplication | None, include_data: bool = True) -> dict[str, Any]:
+    values = {
+        "student_photo_data": application.student_photo_data if application else None,
+        "aadhar_card_data": application.aadhar_card_data if application else None,
+        "admission_receipt_data": application.admission_receipt_data if application else None,
+        "income_certificate_data": application.income_certificate_data if application else None,
+        "caste_certificate_data": application.caste_certificate_data if application else None,
+    }
+    if include_data:
+        return values
+    return {key: bool(value) for key, value in values.items()}
 
 
 def clean_text(value: object | None) -> str | None:
@@ -355,6 +372,10 @@ def serialize_application_form(student: models.Student, application: models.Host
         "religion": application.religion,
         "nationality": application.nationality,
         "student_photo_data": application.student_photo_data,
+        "aadhar_card_data": application.aadhar_card_data,
+        "admission_receipt_data": application.admission_receipt_data,
+        "income_certificate_data": application.income_certificate_data,
+        "caste_certificate_data": application.caste_certificate_data,
         "intermediate_college_name": application.intermediate_college,
         "intermediate_board": application.board,
         "previous_course": application.previous_course,
@@ -601,6 +622,7 @@ async def save_or_submit_application(
             merged = {field: getattr(application, field, None) for field in crud.APPLICATION_DRAFT_FIELDS}
             merged.update(raw_data)
             validate_step_payload(step, merged)
+        raw_data = upload_application_documents(raw_data, student_id=student.id, application_id=application.id)
         updated = crud.save_application_draft(db, student, 8, raw_data)
         submitted = crud.submit_application(db, updated)
         return {
@@ -611,6 +633,11 @@ async def save_or_submit_application(
         }
     require_admission_open(db, existing_draft=bool(existing_draft))
     validate_step_payload(current_step, raw_data)
+    raw_data = upload_application_documents(
+        raw_data,
+        student_id=student.id,
+        application_id=existing_draft.id if existing_draft else None,
+    )
     saved = crud.save_application_draft(db, student, current_step, raw_data)
     return serialize_application_form(student, saved)
 
@@ -814,6 +841,27 @@ def frontend_admin_students(
         application = crud.get_latest_student_application(db, student.id)
         items.append(serialize_admin_student(student, application))
     return {"items": items}
+
+
+@router.get("/admin/students/{student_id}/documents")
+@router.get("/api/admin/students/{student_id}/documents")
+def frontend_admin_student_documents(
+    student_id: int,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    require_admin(authorization, db)
+    student = crud.get_student(db, student_id)
+    if not student:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
+    application = crud.get_latest_student_application(db, student_id)
+    if not application:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
+    return {
+        "student_id": student_id,
+        "application_id": application.id,
+        "documents": serialize_application_documents(application, include_data=True),
+    }
 
 
 @router.get("/admin/payments")

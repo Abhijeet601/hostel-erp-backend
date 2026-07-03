@@ -54,7 +54,7 @@ class Settings(BaseSettings):
         "https://pub-56b2773adb554e88a3d5fbc74f0167bc.r2.dev/mmc-uploads",
         validation_alias="R2_PUBLIC_URL",
     )
-    ccavenue_merchant_id: str = Field("", validation_alias="CCAVENUE_MERCHANT_ID")
+    ccavenue_merchant_id: str = Field("4119268", validation_alias="CCAVENUE_MERCHANT_ID")
     ccavenue_access_code: str = Field("", validation_alias="CCAVENUE_ACCESS_CODE")
     ccavenue_working_key: str = Field("", validation_alias="CCAVENUE_WORKING_KEY")
     ccavenue_gateway_url: str = Field(
@@ -62,9 +62,9 @@ class Settings(BaseSettings):
         validation_alias="CCAVENUE_GATEWAY_URL",
     )
     ccavenue_currency: str = Field("INR", validation_alias="CCAVENUE_CURRENCY")
-    ccavenue_sub_account_id: str = Field("", validation_alias="CCAVENUE_SUB_ACCOUNT_ID")
-    ccavenue_registration_sub_account_id: str = Field("", validation_alias="CCAVENUE_REGISTRATION_SUB_ACCOUNT_ID")
-    ccavenue_hostel_sub_account_id: str = Field("", validation_alias="CCAVENUE_HOSTEL_SUB_ACCOUNT_ID")
+    ccavenue_sub_account_id: str = Field("MahimaHostel", validation_alias="CCAVENUE_SUB_ACCOUNT_ID")
+    ccavenue_registration_sub_account_id: str = Field("MahimaHostel", validation_alias="CCAVENUE_REGISTRATION_SUB_ACCOUNT_ID")
+    ccavenue_hostel_sub_account_id: str = Field("MahimaHostel", validation_alias="CCAVENUE_HOSTEL_SUB_ACCOUNT_ID")
     admin_username: str = Field("admin", validation_alias="ADMIN_USERNAME")
     admin_email: str = Field("admin@magadhmahilacollege.ac.in", validation_alias="ADMIN_EMAIL")
     admin_password: str = Field("ChangeThis@123", validation_alias="ADMIN_PASSWORD")

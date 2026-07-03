@@ -298,8 +298,14 @@ class PaymentBase(BaseModel):
     application_id: int | None = None
     payment_type: str
     amount: Decimal
+    currency: str = "INR"
     mode: str
     status: str = "Pending"
+    tracking_id: str | None = None
+    bank_ref_no: str | None = None
+    failure_reason: str | None = None
+    sub_account_id: str | None = None
+    gateway_response: str | None = None
     paid_at: datetime | None = None
 
 

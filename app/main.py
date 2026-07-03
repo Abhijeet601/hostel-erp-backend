@@ -1,4 +1,6 @@
 import hashlib
+import json
+import logging
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -21,6 +23,8 @@ from app.r2_storage import get_r2_service
 
 
 settings = get_settings()
+HOSTEL_CCAVENUE_SUB_ACCOUNT_ID = "MahimaHostel"
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
 
@@ -77,6 +81,14 @@ def ensure_schema_updates() -> None:
             "income_certificate_data": "TEXT",
             "caste_certificate_data": "TEXT",
         }
+        required_payment_columns = {
+            "currency": "VARCHAR(10) NOT NULL DEFAULT 'INR'",
+            "tracking_id": "VARCHAR(80)",
+            "bank_ref_no": "VARCHAR(80)",
+            "failure_reason": "VARCHAR(255)",
+            "sub_account_id": "VARCHAR(80)",
+            "gateway_response": "TEXT",
+        }
         with engine.begin() as conn:
             student_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(students)"))}
             for column, ddl in required_student_columns.items():
@@ -86,6 +98,10 @@ def ensure_schema_updates() -> None:
             for column, ddl in required_application_columns.items():
                 if column not in application_columns:
                     conn.execute(text(f"ALTER TABLE hostel_applications ADD COLUMN {column} {ddl}"))
+            payment_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(payments)"))}
+            for column, ddl in required_payment_columns.items():
+                if column not in payment_columns:
+                    conn.execute(text(f"ALTER TABLE payments ADD COLUMN {column} {ddl}"))
             conn.execute(
                 text(
                     """
@@ -131,6 +147,14 @@ def ensure_schema_updates() -> None:
         "reset_attempt_count": "INT NOT NULL DEFAULT 0",
         "reset_last_attempt_at": "DATETIME NULL",
     }
+    required_payment_columns = {
+        "currency": "VARCHAR(10) NOT NULL DEFAULT 'INR'",
+        "tracking_id": "VARCHAR(80) NULL",
+        "bank_ref_no": "VARCHAR(80) NULL",
+        "failure_reason": "VARCHAR(255) NULL",
+        "sub_account_id": "VARCHAR(80) NULL",
+        "gateway_response": "TEXT NULL",
+    }
     with engine.begin() as conn:
         application_columns = {
             row[0]
@@ -171,6 +195,7 @@ def ensure_schema_updates() -> None:
                 )
             )
         }
+        payment_columns = set(payment_column_lengths)
         student_columns = {
             row[0]
             for row in conn.execute(
@@ -193,6 +218,9 @@ def ensure_schema_updates() -> None:
         for column, ddl in required_student_columns.items():
             if column not in student_columns:
                 conn.execute(text(f"ALTER TABLE students ADD COLUMN {column} {ddl}"))
+        for column, ddl in required_payment_columns.items():
+            if column not in payment_columns:
+                conn.execute(text(f"ALTER TABLE payments ADD COLUMN {column} {ddl}"))
         conn.execute(
             text(
                 """
@@ -1025,12 +1053,7 @@ def ccavenue_decrypt(encrypted_text: str) -> str:
 
 
 def ccavenue_sub_account_id(payment_type: str) -> str:
-    value = (payment_type or "").lower()
-    if "hostel" in value and settings.ccavenue_hostel_sub_account_id:
-        return settings.ccavenue_hostel_sub_account_id
-    if "registration" in value and settings.ccavenue_registration_sub_account_id:
-        return settings.ccavenue_registration_sub_account_id
-    return settings.ccavenue_sub_account_id
+    return HOSTEL_CCAVENUE_SUB_ACCOUNT_ID
 
 
 def build_ccavenue_request(payment: models.Payment, application: models.HostelApplication) -> str:
@@ -1078,24 +1101,60 @@ def payment_return_page(title: str, message: str, receipt_url: str | None = None
 def initiate_payment(payload: schemas.PaymentInitiateRequest, db: Session = Depends(get_db)):
     application = validate_payment_initiation(payload, db)
     payment_type = normalize_payment_type(payload.payment_type)
-    order_id = f"MMC{datetime.now().strftime('%Y%m%d%H%M%S%f')}{application.id}"[:50]
-    payment_payload = schemas.PaymentCreate(
-        student_id=payload.student_id,
-        application_id=application.id,
-        payment_type=payment_type,
-        amount=payload.amount,
-        mode="CCAvenue",
-        status="Pending",
-        transaction_no=order_id,
-        paid_at=None,
+    payment = crud.get_pending_payment_for_application(db, application.id, payment_type)
+    if not payment:
+        order_id = f"MMC{datetime.now().strftime('%Y%m%d%H%M%S%f')}{application.id}"[:50]
+        payment_payload = schemas.PaymentCreate(
+            student_id=payload.student_id,
+            application_id=application.id,
+            payment_type=payment_type,
+            amount=payload.amount,
+            currency=settings.ccavenue_currency.upper(),
+            mode="CCAvenue",
+            status="Pending",
+            sub_account_id=ccavenue_sub_account_id(payment_type),
+            transaction_no=order_id,
+            paid_at=None,
+        )
+        payment = save_or_409(lambda: crud.create_payment(db, payment_payload))
+    logger.info(
+        "CCAvenue payment request initiated order=%s student_id=%s application_id=%s type=%s amount=%s sub_account_id=%s",
+        payment.transaction_no,
+        payment.student_id,
+        payment.application_id,
+        payment.payment_type,
+        payment.amount,
+        HOSTEL_CCAVENUE_SUB_ACCOUNT_ID,
     )
-    payment = save_or_409(lambda: crud.create_payment(db, payment_payload))
     enc_request = ccavenue_encrypt(build_ccavenue_request(payment, application))
     return schemas.PaymentInitiateResponse(
         gateway_url=settings.ccavenue_gateway_url,
         encRequest=enc_request,
         access_code=settings.ccavenue_access_code,
     )
+
+
+@app.get("/api/payment/status/{order_id}")
+def payment_status(order_id: str, db: Session = Depends(get_db)):
+    payment = crud.get_payment_by_transaction_no(db, order_id)
+    if not payment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment order not found.")
+    receipt = payment.receipts[0] if payment.receipts else None
+    status_key = (payment.status or "").lower()
+    return {
+        "order_id": payment.transaction_no,
+        "tracking_id": payment.tracking_id or payment.transaction_no,
+        "bank_ref_no": payment.bank_ref_no,
+        "payment_mode": payment.mode,
+        "payment_status": payment.status,
+        "status": "success" if status_key in {"paid", "success", "completed"} else ("cancelled" if status_key in {"cancelled", "canceled", "aborted"} else status_key or "pending"),
+        "failure_reason": payment.failure_reason,
+        "amount": float(payment.amount or 0),
+        "currency": payment.currency or settings.ccavenue_currency.upper(),
+        "sub_account_id": payment.sub_account_id or HOSTEL_CCAVENUE_SUB_ACCOUNT_ID,
+        "payment_date": payment.paid_at,
+        "receipt_url": f"/receipts/{receipt.id}/download" if receipt else None,
+    }
 
 
 def handle_ccavenue_response(enc_resp: str, db: Session) -> HTMLResponse:
@@ -1105,8 +1164,17 @@ def handle_ccavenue_response(enc_resp: str, db: Session) -> HTMLResponse:
     payment = crud.get_payment_by_transaction_no(db, order_id)
     if not payment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment order not found.")
+    logger.info("CCAvenue payment response received order=%s status=%s", order_id, values.get("order_status"))
+    existing_status = (payment.status or "").lower()
+    if existing_status in {"paid", "success", "completed"}:
+        receipt_type = "hostel_admission" if "hostel" in payment.payment_type.lower() else "application_registration"
+        receipt = receipt_service.generate_receipt_pdf(db, payment, receipt_type)
+        receipt_url = receipt.pdf_url or f"/receipts/{receipt.id}/download"
+        return payment_return_page("Payment Already Verified", "This payment was already verified. Your receipt is available.", receipt_url)
     order_status = (values.get("order_status") or "").strip()
-    gateway_tracking_id = values.get("tracking_id") or values.get("bank_ref_no") or order_id
+    tracking_id = values.get("tracking_id") or ""
+    bank_ref_no = values.get("bank_ref_no") or ""
+    gateway_tracking_id = tracking_id or bank_ref_no or order_id
     gateway_mode = values.get("payment_mode") or "CCAvenue"
     card_name = values.get("card_name")
     if gateway_tracking_id and gateway_tracking_id != order_id:
@@ -1119,6 +1187,15 @@ def handle_ccavenue_response(enc_resp: str, db: Session) -> HTMLResponse:
             paid_at = datetime.strptime(values["trans_date"], "%d/%m/%Y %H:%M:%S")
         except ValueError:
             paid_at = datetime.now()
+    gateway_response = json.dumps(values, ensure_ascii=True, sort_keys=True)
+    failure_reason = (
+        values.get("failure_message")
+        or values.get("status_message")
+        or values.get("status_message2")
+        or values.get("vault")
+        or order_status
+        or "Payment failed"
+    )
     if order_status.lower() == "success":
         try:
             response_amount = Decimal(values.get("amount") or "0")
@@ -1126,20 +1203,49 @@ def handle_ccavenue_response(enc_resp: str, db: Session) -> HTMLResponse:
             response_amount = Decimal("0")
         response_currency = (values.get("currency") or settings.ccavenue_currency).upper()
         if response_amount != payment.amount or response_currency != settings.ccavenue_currency.upper():
-            crud.update_payment_gateway_result(db, payment, mode=gateway_mode, status="Invalid")
+            crud.update_payment_gateway_result(
+                db,
+                payment,
+                mode=gateway_mode,
+                status="Invalid",
+                tracking_id=tracking_id,
+                bank_ref_no=bank_ref_no,
+                failure_reason="CCAvenue returned mismatched amount or currency.",
+                currency=response_currency,
+                sub_account_id=HOSTEL_CCAVENUE_SUB_ACCOUNT_ID,
+                gateway_response=gateway_response,
+            )
             return payment_return_page("Payment Verification Failed", "CCAvenue returned a payment amount or currency that does not match this order.")
         payment = crud.update_payment_gateway_result(
             db,
             payment,
             mode=gateway_mode,
             status="Paid",
+            tracking_id=tracking_id,
+            bank_ref_no=bank_ref_no,
+            failure_reason="",
+            currency=response_currency,
+            sub_account_id=HOSTEL_CCAVENUE_SUB_ACCOUNT_ID,
+            gateway_response=gateway_response,
             paid_at=paid_at,
         )
         receipt_type = "hostel_admission" if "hostel" in payment.payment_type.lower() else "application_registration"
         receipt = receipt_service.generate_receipt_pdf(db, payment, receipt_type)
         receipt_url = receipt.pdf_url or f"/receipts/{receipt.id}/download"
         return payment_return_page("Payment Successful", "Your payment has been verified and the receipt has been generated.", receipt_url)
-    crud.update_payment_gateway_result(db, payment, mode=gateway_mode, status=order_status or "Failed")
+    failed_status = "Cancelled" if order_status.lower() in {"aborted", "cancelled", "canceled", "cancel"} else (order_status or "Failed")
+    crud.update_payment_gateway_result(
+        db,
+        payment,
+        mode=gateway_mode,
+        status=failed_status,
+        tracking_id=tracking_id,
+        bank_ref_no=bank_ref_no,
+        failure_reason=failure_reason,
+        currency=(values.get("currency") or settings.ccavenue_currency).upper(),
+        sub_account_id=HOSTEL_CCAVENUE_SUB_ACCOUNT_ID,
+        gateway_response=gateway_response,
+    )
     return payment_return_page("Payment Not Completed", "CCAvenue did not confirm this payment. Please try again from the ERP portal.")
 
 

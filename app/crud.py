@@ -650,6 +650,22 @@ def get_payment_by_transaction_no(db: Session, transaction_no: str) -> models.Pa
     return db.scalar(select(models.Payment).where(models.Payment.transaction_no == transaction_no))
 
 
+def get_pending_payment_for_application(
+    db: Session,
+    application_id: int,
+    payment_type: str,
+) -> models.Payment | None:
+    return db.scalar(
+        select(models.Payment)
+        .where(
+            models.Payment.application_id == application_id,
+            models.Payment.payment_type == payment_type,
+            models.Payment.status.in_(["Pending", "pending", "Initiated", "initiated"]),
+        )
+        .order_by(models.Payment.created_at.desc())
+    )
+
+
 def update_payment_gateway_result(
     db: Session,
     payment: models.Payment,
@@ -657,6 +673,12 @@ def update_payment_gateway_result(
     transaction_no: str | None = None,
     mode: str | None = None,
     status: str | None = None,
+    tracking_id: str | None = None,
+    bank_ref_no: str | None = None,
+    failure_reason: str | None = None,
+    currency: str | None = None,
+    sub_account_id: str | None = None,
+    gateway_response: str | None = None,
     paid_at: datetime | None = None,
 ) -> models.Payment:
     if transaction_no:
@@ -665,6 +687,18 @@ def update_payment_gateway_result(
         payment.mode = mode
     if status:
         payment.status = status
+    if tracking_id is not None:
+        payment.tracking_id = tracking_id
+    if bank_ref_no is not None:
+        payment.bank_ref_no = bank_ref_no
+    if failure_reason is not None:
+        payment.failure_reason = failure_reason
+    if currency:
+        payment.currency = currency
+    if sub_account_id:
+        payment.sub_account_id = sub_account_id
+    if gateway_response is not None:
+        payment.gateway_response = gateway_response
     if paid_at:
         payment.paid_at = paid_at
     db.commit()

@@ -84,6 +84,7 @@ class AccountActionResponse(BaseModel):
     message: str
     temporary_password: str | None = None
     email_status: str | None = None
+    student: dict | None = None
 
 
 class StudentRead(StudentBase):

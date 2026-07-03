@@ -225,6 +225,16 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
     hostel_name = application.hostel.name if application and application.hostel else None
     room_number = application.room.room_number if application and application.room else None
     documents = serialize_application_documents(application, include_data=False)
+    payments = list(student.payments)
+    receipts = list(student.receipts)
+    registration_status = payment_status_for_kind(payments, receipts, "registration")
+    hostel_status = payment_status_for_kind(payments, receipts, "hostel")
+    hostel_payment_relevant = bool(
+        (application and application.hostel_id)
+        or any(payment_matches_kind(payment.payment_type, "hostel") for payment in payments)
+        or any(receipt.receipt_type == "hostel_admission" for receipt in receipts)
+    )
+    overall_payment_status = combine_payment_status(registration_status, hostel_status) if hostel_payment_relevant else registration_status
     return {
         "id": student.id,
         "application_number": student.student_code,
@@ -242,6 +252,22 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
         "preferred_hostel": hostel_name,
         "room_number": room_number,
         "application_id": application.id if application else None,
+        "payment_status": overall_payment_status,
+        "application_payment_status": registration_status,
+        "registration_payment_status": registration_status,
+        "hostel_status": hostel_status if hostel_payment_relevant else None,
+        "hostel_payment_status": hostel_status if hostel_payment_relevant else None,
+        "payment_history": [
+            {
+                "id": payment.id,
+                "payment_type": payment.payment_type,
+                "amount": payment.amount,
+                "status": payment.status,
+                "transaction_no": payment.transaction_no,
+                "created_at": payment.created_at,
+            }
+            for payment in payments
+        ],
         "account_active": student.is_active,
         "force_password_change": student.force_password_change,
         "aadhaar_number": application.aadhar_number if application else None,
@@ -255,6 +281,60 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
             **documents,
         },
     }
+
+
+def normalize_payment_state(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    if text in {"paid", "success", "successful", "completed", "captured"}:
+        return "paid"
+    if text in {"failed", "failure", "declined", "cancelled", "canceled", "aborted"}:
+        return "failed"
+    if text in {"refunded", "refund"}:
+        return "refunded"
+    return "pending"
+
+
+def payment_matches_kind(payment_type: str | None, kind: str) -> bool:
+    text = (payment_type or "").strip().lower()
+    if kind == "hostel":
+        return "hostel" in text
+    return "hostel" not in text and ("registration" in text or "application" in text or "admission" in text)
+
+
+def payment_status_for_kind(
+    payments: list[models.Payment],
+    receipts: list[models.PaymentReceipt],
+    kind: str,
+) -> str:
+    matching_receipts = [
+        receipt for receipt in receipts
+        if (kind == "hostel" and receipt.receipt_type == "hostel_admission")
+        or (kind == "registration" and receipt.receipt_type == "application_registration")
+    ]
+    if matching_receipts:
+        return "paid"
+    matching_payments = [payment for payment in payments if payment_matches_kind(payment.payment_type, kind)]
+    states = [normalize_payment_state(payment.status) for payment in matching_payments]
+    if "paid" in states:
+        return "paid"
+    if "failed" in states:
+        return "failed"
+    if "refunded" in states:
+        return "refunded"
+    return "pending"
+
+
+def combine_payment_status(registration_status: str, hostel_status: str) -> str:
+    statuses = {registration_status, hostel_status}
+    if "failed" in statuses:
+        return "failed"
+    if "refunded" in statuses:
+        return "refunded"
+    if statuses == {"paid"}:
+        return "paid"
+    if "paid" in statuses:
+        return "partially_paid"
+    return "pending"
 
 
 def serialize_application_documents(application: models.HostelApplication | None, include_data: bool = True) -> dict[str, Any]:
@@ -963,6 +1043,8 @@ def frontend_allocate_hostel(
     return serialize_admin_student(student, application) if student else {"status": "ok"}
 
 
+@router.post("/admin/students/{student_id}/account", response_model=schemas.AccountActionResponse)
+@router.post("/api/admin/students/{student_id}/account", response_model=schemas.AccountActionResponse)
 @router.patch("/admin/students/{student_id}/account", response_model=schemas.AccountActionResponse)
 @router.patch("/api/admin/students/{student_id}/account", response_model=schemas.AccountActionResponse)
 def frontend_update_student_account(
@@ -1063,7 +1145,13 @@ def frontend_update_student_account(
         },
     )
     db.commit()
-    return schemas.AccountActionResponse(message="Account Updated Successfully")
+    db.refresh(student)
+    if application:
+        db.refresh(application)
+    return schemas.AccountActionResponse(
+        message="Account Updated Successfully",
+        student=serialize_admin_student(student, application),
+    )
 
 
 @router.post("/admin/students/{student_id}/reset-password", response_model=schemas.AccountActionResponse)
@@ -1105,10 +1193,12 @@ def frontend_admin_reset_student_password(
         new_values={"force_password_change": student.force_password_change, "email_status": email_status},
     )
     db.commit()
+    application = crud.get_latest_student_application(db, student.id)
     return schemas.AccountActionResponse(
         message="Password Reset Successfully",
         temporary_password=password if payload.generate_temporary else None,
         email_status=email_status,
+        student=serialize_admin_student(student, application),
     )
 
 

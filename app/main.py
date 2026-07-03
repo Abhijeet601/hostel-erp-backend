@@ -1379,9 +1379,7 @@ def download_receipt(
     # Regenerate first when possible so older receipts also get template/logo fixes.
     if receipt.payment:
         updated_receipt = receipt_service.generate_receipt_pdf(db, receipt.payment, receipt.receipt_type)
-        if updated_receipt.pdf_url and updated_receipt.pdf_url.startswith("http"):
-            from fastapi.responses import RedirectResponse
-            return RedirectResponse(url=updated_receipt.pdf_url, status_code=307)
+        receipt = updated_receipt
 
     # Try to get PDF bytes from R2 or local storage
     pdf_bytes = receipt_service.get_receipt_pdf_bytes(receipt.receipt_number)

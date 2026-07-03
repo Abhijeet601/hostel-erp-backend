@@ -89,13 +89,21 @@ def file_data_uri(path: Path) -> str:
     return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
 
-def college_logo_data_uri() -> str:
+def college_logo_path() -> Path | None:
     for path in LOGO_CANDIDATES:
-        data_uri = file_data_uri(path)
-        if data_uri:
-            return data_uri
+        if path.exists():
+            return path
     logger.warning("College logo not found in receipt logo candidates: %s", LOGO_CANDIDATES)
-    return ""
+    return None
+
+
+def college_logo_data_uri() -> str:
+    path = college_logo_path()
+    return file_data_uri(path) if path else ""
+
+
+def college_logo_src() -> str:
+    return "receipt-logo://college" if college_logo_path() else college_logo_data_uri()
 
 
 def qr_data_uri(value: str) -> str:
@@ -129,6 +137,7 @@ def common_context(receipt: models.PaymentReceipt, payment: models.Payment) -> d
         "receipt_number": receipt.receipt_number,
         "generated_at": display_date(receipt.generated_at or datetime.now(), include_time=True),
         "payment_date_only": display_date(paid_at),
+        "logo_src": college_logo_src(),
         "logo_data": college_logo_data_uri(),
         "photo_data": app.student_photo_data if app and app.student_photo_data else "",
         "qr_data": qr_data_uri(verification_url(receipt.receipt_number)),
@@ -232,11 +241,24 @@ def hostel_context(receipt: models.PaymentReceipt, payment: models.Payment) -> d
     return context
 
 
+def receipt_link_callback(uri: str, rel: str) -> str:
+    if uri == "receipt-logo://college":
+        path = college_logo_path()
+        if path:
+            return str(path)
+    return uri
+
+
 def render_html_pdf_to_bytes(template_name: str, context: dict) -> bytes:
     """Render an HTML template to PDF bytes in memory."""
     html = templates.get_template(template_name).render(**context)
     buffer = BytesIO()
-    result = pisa.CreatePDF(html, dest=buffer, encoding="utf-8")
+    result = pisa.CreatePDF(
+        html,
+        dest=buffer,
+        encoding="utf-8",
+        link_callback=receipt_link_callback,
+    )
     if result.err:
         raise RuntimeError(f"Receipt PDF rendering failed with {result.err} error(s).")
     return buffer.getvalue()

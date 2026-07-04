@@ -737,18 +737,13 @@ def save_application_draft(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
     existing_draft = crud.get_editable_student_application(db, student.id)
     existing_latest = crud.get_latest_student_application(db, student.id)
-    if existing_latest and existing_latest.application_status != "Draft" and not existing_draft:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A hostel application already exists for this student.",
-        )
     require_admission_open(db, existing_draft=bool(existing_draft))
     data = normalize_application_data(payload.data)
     validate_step_payload(payload.current_step, data)
     session_value = data.get("session")
     if session_value:
         duplicate = crud.get_student_application_for_session(db, student.id, session_value)
-        if duplicate and duplicate.application_status != "Draft" and (not existing_draft or duplicate.id != existing_draft.id):
+        if duplicate and (not existing_draft or duplicate.id != existing_draft.id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="A hostel application already exists for this session.",
@@ -797,9 +792,7 @@ def submit_application(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
     if application.student_id != payload.student_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Application does not belong to this student.")
-    if application.application_status != "Draft":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only draft applications can be submitted.")
-    require_admission_open(db, existing_draft=False)
+    require_admission_open(db, existing_draft=True)
     data = normalize_application_data(payload.data)
     merged = {field: getattr(application, field, None) for field in crud.APPLICATION_DRAFT_FIELDS}
     merged.update(data)

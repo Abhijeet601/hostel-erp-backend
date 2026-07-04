@@ -338,10 +338,7 @@ def get_student_application_for_session(
 def get_editable_student_application(db: Session, student_id: int) -> models.HostelApplication | None:
     return db.scalar(
         select(models.HostelApplication)
-        .where(
-            models.HostelApplication.student_id == student_id,
-            models.HostelApplication.application_status == "Draft",
-        )
+        .where(models.HostelApplication.student_id == student_id)
         .order_by(models.HostelApplication.updated_at.desc(), models.HostelApplication.id.desc())
         .limit(1)
     )
@@ -423,6 +420,7 @@ def save_application_draft(
     data: dict,
 ) -> models.HostelApplication:
     application = get_editable_student_application(db, student.id)
+    existing_status = application.application_status if application else None
     if not application:
         application = models.HostelApplication(
             application_no=generate_application_no(student.id),
@@ -441,8 +439,12 @@ def save_application_draft(
     application.bed = normalize_bed_value(application.bed)
 
     application.current_step = max(application.current_step or 1, current_step)
-    application.status = "Draft"
-    application.application_status = "Draft"
+    if existing_status and existing_status != "Draft":
+        application.status = existing_status
+        application.application_status = existing_status
+    else:
+        application.status = "Draft"
+        application.application_status = "Draft"
     application.last_saved_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
     db.refresh(application)

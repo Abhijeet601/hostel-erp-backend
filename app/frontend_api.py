@@ -809,9 +809,7 @@ async def save_or_submit_application(
         application = existing_draft or crud.get_latest_student_application(db, student.id)
         if not application:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No draft application found to submit.")
-        if application.application_status != "Draft":
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Application has already been submitted.")
-        require_admission_open(db, existing_draft=False)
+        require_admission_open(db, existing_draft=True)
         for step in range(1, 9):
             merged = {field: getattr(application, field, None) for field in crud.APPLICATION_DRAFT_FIELDS}
             merged.update(raw_data)

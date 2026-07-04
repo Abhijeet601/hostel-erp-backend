@@ -1131,6 +1131,14 @@ def frontend_shortlist_student(
         application.allotted_category = clean_text(payload.allotted_category)[:20]
     application.application_status = "Shortlisted" if payload.shortlisted else "Verified"
     application.status = application.application_status
+    if not payload.shortlisted:
+        application.allotted_category = None
+        application.hostel_id = None
+        application.room_id = None
+        application.block = None
+        application.floor = None
+        application.bed = None
+        application.allocation_status = "pending"
     db.commit()
     db.refresh(application)
     student = crud.get_student(db, student_id)

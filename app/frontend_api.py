@@ -58,6 +58,7 @@ class FrontendVerifyRequest(BaseModel):
 
 class FrontendShortlistRequest(BaseModel):
     shortlisted: bool = True
+    allotted_category: str | None = None
 
 
 class FrontendAllocateHostelRequest(BaseModel):
@@ -1126,6 +1127,8 @@ def frontend_shortlist_student(
     application = crud.get_latest_student_application(db, student_id)
     if not application:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
+    if payload.allotted_category:
+        application.allotted_category = clean_text(payload.allotted_category)[:20]
     application.application_status = "Shortlisted" if payload.shortlisted else "Verified"
     application.status = application.application_status
     db.commit()

@@ -76,6 +76,13 @@ def money(value: Decimal | int | float | None) -> str:
     return f"Rs. {amount:,.2f}"
 
 
+def money_plain(value: Decimal | int | float | None) -> str:
+    amount = Decimal(value or 0)
+    if amount == amount.to_integral_value():
+        return f"{amount:,.0f}"
+    return f"{amount:,.2f}"
+
+
 def category(value: str | None) -> str:
     if not value:
         return "-"
@@ -150,19 +157,20 @@ def registration_context(receipt: models.PaymentReceipt, payment: models.Payment
     context = common_context(receipt, payment)
     context.update({
         "applicant_fields": [
-            ("Application Number", safe(app.application_no if app else None)),
-            ("Applicant Name", safe(student.name if student else None)),
+            ("Receipt No.", safe(receipt.receipt_number)),
+            ("Application No.", safe(app.application_no if app else None)),
+            ("Applicant's Name", safe(student.name if student else None)),
             ("Gender", safe(student.gender if student else None)),
-            ("Date of Birth", display_date(student.date_of_birth if student else None)),
-            ("Mobile Number", safe(student.mobile if student else None)),
-            ("Email", safe(student.email if student else None)),
-            ("Father Name", safe(app.father_name if app else None)),
-            ("Mother Name", safe(app.mother_name if app else None)),
-            ("Local Guardian Name", safe(app.guardian_name if app else None)),
-            ("Guardian Mobile", safe(app.guardian_mobile if app else None)),
+            ("DOB (dd-mm-yyyy)", display_date(student.date_of_birth if student else None)),
+            ("Mobile No.", safe(student.mobile if student else None)),
+            ("Email ID", safe(student.email if student else None)),
+            ("Father's Name", safe(app.father_name if app else None)),
+            ("Mother's Name", safe(app.mother_name if app else None)),
+            ("Local Guardian's Name", safe(app.guardian_name if app else None)),
+            ("Local Guardian's Mobile No.", safe(app.guardian_mobile if app else None)),
             ("Blood Group", safe(app.blood_group if app else None)),
-            ("Aadhar Number", safe(app.aadhar_number if app else None)),
-            ("Applied Category", category(app.applied_category if app else student.category if student else None)),
+            ("Aadhaar No.", safe(app.aadhar_number if app else None)),
+            ("Category", category(app.applied_category if app else student.category if student else None)),
             ("Religion", safe(app.religion if app else None)),
             ("Nationality", safe(app.nationality if app else None)),
             ("Correspondence Address", safe(app.correspondence_address if app else None)),
@@ -182,9 +190,9 @@ def registration_context(receipt: models.PaymentReceipt, payment: models.Payment
             ("Roll Number", safe(app.roll_number if app else None)),
         ],
         "payment_fields": [
-            ("Registration Fee", money(payment.amount)),
+            ("Payment Amount (Rs.)", money_plain(payment.amount)),
+            ("Payment Status", safe(payment.status).upper()),
             ("Transaction ID", safe(payment.transaction_no)),
-            ("Payment Status", safe(payment.status)),
             ("Payment Date", display_date(payment.paid_at or payment.created_at, include_time=True)),
             ("Payment Mode", safe(payment.mode)),
         ],
@@ -200,42 +208,25 @@ def hostel_context(receipt: models.PaymentReceipt, payment: models.Payment) -> d
     context = common_context(receipt, payment)
     context.update({
         "student_fields": [
-            ("Application Number", safe(app.application_no if app else None)),
+            ("Receipt No.", safe(receipt.receipt_number)),
+            ("Application No.", safe(app.application_no if app else None)),
             ("Admission ID", safe(app.admission_id if app else None)),
-            ("Student Name", safe(student.name if student else None)),
+            ("Applicant's Name", safe(student.name if student else None)),
             ("Gender", safe(student.gender if student else None)),
-            ("Date of Birth", display_date(student.date_of_birth if student else None)),
-            ("Mobile Number", safe(student.mobile if student else None)),
-            ("Email", safe(student.email if student else None)),
-            ("Father Name", safe(app.father_name if app else None)),
-            ("Mother Name", safe(app.mother_name if app else None)),
-            ("Local Guardian Name", safe(app.guardian_name if app else None)),
-            ("Guardian Mobile", safe(app.guardian_mobile if app else None)),
-            ("Blood Group", safe(app.blood_group if app else None)),
-            ("Aadhar Number", safe(app.aadhar_number if app else None)),
-            ("Applied Category", category(app.applied_category if app else None)),
-            ("Allotted Category", category(app.allotted_category if app else None)),
-            ("Religion", safe(app.religion if app else None)),
-            ("Nationality", safe(app.nationality if app else None)),
-            ("Correspondence Address", safe(app.correspondence_address if app else None)),
-        ],
-        "admission_fields": [
-            ("Admission ID", safe(app.admission_id if app else None)),
-            ("College Name", safe(app.college_name if app else None)),
-            ("Course Name", safe(app.course if app else student.course if student else None)),
-            ("Honours Subject", safe(app.subject if app else None)),
+            ("Mobile No.", safe(student.mobile if student else None)),
+            ("Email ID", safe(student.email if student else None)),
+            ("Hostel Name", safe(hostel.name if hostel else receipt.hostel_name)),
+            ("Room No.", safe(room.room_number if room else receipt.room_number)),
+            ("Bed No.", safe(app.bed if app else None)),
+            ("Course", safe(app.course if app else student.course if student else None)),
             ("Session", safe(app.session if app else student.session if student else None)),
-            ("Roll Number", safe(app.roll_number if app else None)),
         ],
         "hostel_fields": [
-            ("Hostel Name", safe(hostel.name if hostel else receipt.hostel_name)),
-            ("Room Number", safe(room.room_number if room else receipt.room_number)),
-            ("Bed Number", "-"),
-            ("Payment Amount", money(payment.amount)),
+            ("Payment Amount (Rs.)", money_plain(payment.amount)),
+            ("Payment Status", safe(payment.status).upper()),
             ("Transaction ID", safe(payment.transaction_no)),
             ("Payment Date", display_date(payment.paid_at or payment.created_at, include_time=True)),
             ("Payment Mode", safe(payment.mode)),
-            ("Payment Status", safe(payment.status)),
         ],
     })
     return context

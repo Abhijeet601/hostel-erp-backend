@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlencode
 from Crypto.Cipher import AES
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import select, text
 from sqlalchemy.exc import DataError, IntegrityError
 from sqlalchemy.orm import Session
@@ -1369,18 +1369,8 @@ def download_receipt(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt not found.")
     authorize_receipt_access(db, receipt, authorization, token)
 
-    # Regenerate first when possible so older receipts also get template/logo fixes.
-    if receipt.payment:
-        updated_receipt = receipt_service.generate_receipt_pdf(db, receipt.payment, receipt.receipt_type)
-        receipt = updated_receipt
-        pdf_bytes = receipt_service.build_receipt_pdf_bytes(receipt, receipt.payment, receipt.receipt_type)
-        return StreamingResponse(
-            BytesIO(pdf_bytes),
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{receipt.receipt_number}.pdf"'},
-        )
-
-    # Try to get PDF bytes from R2 or local storage
+    # Prefer the already-generated PDF. Regenerating on every download is slow
+    # and can fail if external image assets are temporarily unreachable.
     pdf_bytes = receipt_service.get_receipt_pdf_bytes(receipt.receipt_number)
     if pdf_bytes:
         return StreamingResponse(
@@ -1389,18 +1379,27 @@ def download_receipt(
             headers={"Content-Disposition": f'attachment; filename="{receipt.receipt_number}.pdf"'},
         )
 
-    # Last resort: fail if there is no payment to regenerate from.
+    if receipt.pdf_url and receipt.pdf_url.startswith(("http://", "https://")):
+        return RedirectResponse(receipt.pdf_url)
+
     if not receipt.payment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt PDF not found.")
 
-    # Fallback to local file
-    path = receipt_service.receipt_pdf_path(receipt.receipt_number)
-    if not path.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receipt PDF not found.")
-    return FileResponse(
-        path,
+    try:
+        updated_receipt = receipt_service.generate_receipt_pdf(db, receipt.payment, receipt.receipt_type)
+        receipt = updated_receipt
+        pdf_bytes = receipt_service.get_receipt_pdf_bytes(receipt.receipt_number)
+        if not pdf_bytes:
+            pdf_bytes = receipt_service.build_receipt_pdf_bytes(receipt, receipt.payment, receipt.receipt_type)
+    except Exception as exc:
+        logger.exception("Could not generate receipt %s.", receipt.receipt_number)
+        if receipt.pdf_url and receipt.pdf_url.startswith(("http://", "https://")):
+            return RedirectResponse(receipt.pdf_url)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Receipt PDF could not be generated.") from exc
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
         media_type="application/pdf",
-        filename=f"{receipt.receipt_number}.pdf",
+        headers={"Content-Disposition": f'attachment; filename="{receipt.receipt_number}.pdf"'},
     )
 
 

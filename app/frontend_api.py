@@ -1037,7 +1037,7 @@ def frontend_admin_students(
     db: Session = Depends(get_db),
 ):
     require_admin(authorization, db)
-    students = crud.list_students(db, limit=limit)
+    students = crud.list_students(db, limit=max(limit, 5000))
     items = []
     for student in students:
         application = crud.get_latest_student_application(db, student.id)

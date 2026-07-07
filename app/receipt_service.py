@@ -10,6 +10,8 @@ from pathlib import Path
 import qrcode
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload, selectinload
 from xhtml2pdf import pisa
 
 from app import models
@@ -355,3 +357,31 @@ def generate_receipt_pdf(
     db.commit()
     db.refresh(receipt)
     return receipt
+
+
+def ensure_receipts_for_successful_payments(db: Session, student_id: int | None = None) -> int:
+    successful_statuses = ["Paid", "Success", "Completed", "paid", "success", "completed"]
+    stmt = (
+        select(models.Payment)
+        .options(
+            joinedload(models.Payment.student),
+            joinedload(models.Payment.application).joinedload(models.HostelApplication.hostel),
+            joinedload(models.Payment.application).joinedload(models.HostelApplication.room),
+            selectinload(models.Payment.receipts),
+        )
+        .where(models.Payment.status.in_(successful_statuses))
+        .order_by(models.Payment.created_at.desc())
+    )
+    if student_id:
+        stmt = stmt.where(models.Payment.student_id == student_id)
+    generated = 0
+    for payment in db.scalars(stmt):
+        receipt_type = infer_receipt_type(payment)
+        if any(receipt.receipt_type == receipt_type for receipt in payment.receipts):
+            continue
+        try:
+            generate_receipt_pdf(db, payment, receipt_type)
+            generated += 1
+        except Exception:
+            logger.exception("Could not auto-generate missing receipt for payment %s.", payment.id)
+    return generated

@@ -1204,6 +1204,7 @@ def frontend_admin_payments(
     db: Session = Depends(get_db),
 ):
     require_admin(authorization, db)
+    receipt_service.ensure_receipts_for_successful_payments(db)
     payments = crud.list_payments(db)
     receipts = crud.list_receipts(db)
     payment_ids_with_receipts = {receipt.payment_id for receipt in receipts if receipt.payment_id}

@@ -1378,6 +1378,7 @@ def list_receipts(
     db: Session = Depends(get_db),
 ):
     scoped_student_id = authorized_receipt_student_id(db, student_id, authorization, token)
+    receipt_service.ensure_receipts_for_successful_payments(db, student_id=scoped_student_id)
     return crud.list_receipts(db, student_id=scoped_student_id)
 
 

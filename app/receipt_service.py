@@ -367,7 +367,11 @@ def generate_receipt_pdf(
     return receipt
 
 
-def ensure_receipts_for_successful_payments(db: Session, student_id: int | None = None) -> int:
+def ensure_receipts_for_successful_payments(
+    db: Session,
+    student_id: int | None = None,
+    max_generate: int | None = None,
+) -> int:
     successful_statuses = ["Paid", "Success", "Completed", "paid", "success", "completed"]
     stmt = (
         select(models.Payment)
@@ -384,6 +388,8 @@ def ensure_receipts_for_successful_payments(db: Session, student_id: int | None 
         stmt = stmt.where(models.Payment.student_id == student_id)
     generated = 0
     for payment in db.scalars(stmt):
+        if max_generate is not None and generated >= max_generate:
+            break
         receipt_type = infer_receipt_type(payment)
         if any(receipt.receipt_type == receipt_type for receipt in payment.receipts):
             continue

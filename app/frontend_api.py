@@ -415,29 +415,41 @@ def serialize_admin_payment(payment: models.Payment) -> dict[str, Any]:
 
 
 def serialize_admin_receipt_only(receipt: models.PaymentReceipt) -> dict[str, Any]:
-    student = receipt.student
+    payment = receipt.payment
+    student = receipt.student or (payment.student if payment else None)
+    application = payment.application if payment else None
+    payment_type = (
+        payment.payment_type
+        if payment and payment.payment_type
+        else ("Hostel Admission Fee" if receipt.receipt_type == "hostel_admission" else "Registration Fee")
+    )
+    payment_date = payment.paid_at if payment and payment.paid_at else receipt.generated_at
     return {
         "id": f"receipt-{receipt.id}",
-        "payment_id": None,
+        "payment_id": payment.id if payment else None,
         "receipt_id": receipt.id,
         "receipt_number": receipt.receipt_number,
         "receipt_url": f"/receipts/{receipt.id}/download",
-        "application_number": receipt.application_number,
+        "application_number": application.application_no if application else receipt.application_number,
         "student_id": receipt.student_id,
         "student_code": student.student_code if student else None,
         "student_name": student.name if student else None,
         "student_email": student.email if student else None,
         "student_mobile": student.mobile if student else None,
-        "payment_type": "Hostel Admission Fee" if receipt.receipt_type == "hostel_admission" else "Registration Fee",
+        "payment_type": payment_type,
         "payment_type_key": receipt_type_key(receipt.receipt_type),
-        "transaction_id": receipt.transaction_id,
-        "tracking_id": receipt.transaction_id,
-        "order_id": receipt.transaction_id,
+        "transaction_id": payment.transaction_no if payment else receipt.transaction_id,
+        "tracking_id": (payment.tracking_id or payment.transaction_no) if payment else receipt.transaction_id,
+        "bank_ref_no": payment.bank_ref_no if payment else None,
+        "order_id": payment.transaction_no if payment else receipt.transaction_id,
+        "currency": payment.currency if payment else None,
+        "sub_account_id": payment.sub_account_id if payment else None,
+        "failure_reason": payment.failure_reason if payment else None,
         "amount": receipt.amount,
-        "mode": None,
-        "status": "Generated",
+        "mode": payment.mode if payment else None,
+        "status": payment.status if payment and payment.status else "Generated",
         "status_key": "paid",
-        "payment_date": receipt.generated_at,
+        "payment_date": payment_date,
         "created_at": receipt.generated_at,
     }
 
@@ -1080,13 +1092,14 @@ def frontend_admin_payments(
 ):
     require_admin(authorization, db)
     payments = crud.list_payments(db)
-    items = [serialize_admin_payment(payment) for payment in payments]
-    payment_ids = {payment.id for payment in payments}
-    orphan_receipts = [
-        receipt for receipt in crud.list_receipts(db)
-        if not receipt.payment_id or receipt.payment_id not in payment_ids
-    ]
-    items.extend(serialize_admin_receipt_only(receipt) for receipt in orphan_receipts)
+    receipts = crud.list_receipts(db)
+    payment_ids_with_receipts = {receipt.payment_id for receipt in receipts if receipt.payment_id}
+    items = [serialize_admin_receipt_only(receipt) for receipt in receipts]
+    items.extend(
+        serialize_admin_payment(payment)
+        for payment in payments
+        if payment.id not in payment_ids_with_receipts
+    )
     items.sort(key=lambda item: item.get("payment_date") or datetime.min, reverse=True)
     return {"items": items}
 

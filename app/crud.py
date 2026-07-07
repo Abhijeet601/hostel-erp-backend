@@ -851,7 +851,11 @@ def get_payment(db: Session, payment_id: int) -> models.Payment | None:
 def list_receipts(db: Session, student_id: int | None = None) -> list[models.PaymentReceipt]:
     stmt = (
         select(models.PaymentReceipt)
-        .options(joinedload(models.PaymentReceipt.student), joinedload(models.PaymentReceipt.payment))
+        .options(
+            joinedload(models.PaymentReceipt.student),
+            joinedload(models.PaymentReceipt.payment).joinedload(models.Payment.student),
+            joinedload(models.PaymentReceipt.payment).joinedload(models.Payment.application),
+        )
         .order_by(models.PaymentReceipt.generated_at.desc())
     )
     if student_id:

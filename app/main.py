@@ -1,14 +1,17 @@
 import hashlib
 import json
 import logging
+import time
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
+from threading import Lock
 from urllib.parse import parse_qs, urlencode
 
 from Crypto.Cipher import AES
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import select, text
 from sqlalchemy.exc import DataError, IntegrityError
@@ -25,6 +28,8 @@ from app.r2_storage import get_r2_service
 settings = get_settings()
 HOSTEL_CCAVENUE_SUB_ACCOUNT_ID = "MahimaHostel"
 logger = logging.getLogger(__name__)
+payment_initiation_locks: dict[tuple[int, str], Lock] = {}
+payment_initiation_locks_guard = Lock()
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
 
@@ -36,6 +41,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+@app.middleware("http")
+async def log_slow_requests(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    response.headers["X-Process-Time-ms"] = f"{elapsed_ms:.1f}"
+    if elapsed_ms >= 750:
+        logger.warning(
+            "Slow request method=%s path=%s status=%s duration_ms=%.1f",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
+        )
+    return response
 
 app.include_router(frontend_router)
 
@@ -44,6 +67,7 @@ app.include_router(frontend_router)
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_schema_updates()
+    ensure_database_indexes()
     ensure_default_admin()
     remove_demo_payment_data()
 
@@ -280,6 +304,58 @@ def ensure_schema_updates() -> None:
                 """
             )
         )
+
+
+def ensure_database_indexes() -> None:
+    indexes = {
+        "students": {
+            "ix_students_active_created": ("is_active", "created_at", "id"),
+            "ix_students_name": ("name",),
+        },
+        "hostel_applications": {
+            "ix_app_student_updated": ("student_id", "updated_at", "id"),
+            "ix_app_status_updated": ("application_status", "updated_at"),
+            "ix_app_room_allocation": ("room_id", "allocation_status", "application_status"),
+            "ix_app_hostel_status": ("hostel_id", "application_status"),
+        },
+        "payments": {
+            "ix_payments_student_created": ("student_id", "created_at"),
+            "ix_payments_application_type_status": ("application_id", "payment_type", "status"),
+            "ix_payments_status_created": ("status", "created_at"),
+        },
+        "payment_receipts": {
+            "ix_receipts_student_generated": ("student_id", "generated_at"),
+            "ix_receipts_payment_type": ("payment_id", "receipt_type"),
+        },
+        "rooms": {
+            "ix_rooms_hostel_floor_number": ("hostel_id", "floor", "room_number"),
+            "ix_rooms_status": ("status",),
+        },
+    }
+    with engine.begin() as conn:
+        if engine.dialect.name == "mysql":
+            existing = {
+                (row[0], row[1])
+                for row in conn.execute(
+                    text(
+                        """
+                        SELECT TABLE_NAME, INDEX_NAME
+                        FROM INFORMATION_SCHEMA.STATISTICS
+                        WHERE TABLE_SCHEMA = DATABASE()
+                        """
+                    )
+                )
+            }
+            for table, table_indexes in indexes.items():
+                for name, columns in table_indexes.items():
+                    if (table, name) not in existing:
+                        column_sql = ", ".join(f"`{column}`" for column in columns)
+                        conn.execute(text(f"CREATE INDEX {name} ON {table} ({column_sql})"))
+            return
+        for table, table_indexes in indexes.items():
+            for name, columns in table_indexes.items():
+                column_sql = ", ".join(columns)
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({column_sql})"))
 
 
 @app.get("/health")
@@ -1116,22 +1192,26 @@ def payment_return_page(title: str, message: str, receipt_url: str | None = None
 def initiate_payment(payload: schemas.PaymentInitiateRequest, db: Session = Depends(get_db)):
     application = validate_payment_initiation(payload, db)
     payment_type = normalize_payment_type(payload.payment_type)
-    payment = crud.get_pending_payment_for_application(db, application.id, payment_type)
-    if not payment:
-        order_id = f"MMC{datetime.now().strftime('%Y%m%d%H%M%S%f')}{application.id}"[:50]
-        payment_payload = schemas.PaymentCreate(
-            student_id=payload.student_id,
-            application_id=application.id,
-            payment_type=payment_type,
-            amount=payload.amount,
-            currency=settings.ccavenue_currency.upper(),
-            mode="CCAvenue",
-            status="Pending",
-            sub_account_id=ccavenue_sub_account_id(payment_type),
-            transaction_no=order_id,
-            paid_at=None,
-        )
-        payment = save_or_409(lambda: crud.create_payment(db, payment_payload))
+    lock_key = (application.id, payment_type)
+    with payment_initiation_locks_guard:
+        initiation_lock = payment_initiation_locks.setdefault(lock_key, Lock())
+    with initiation_lock:
+        payment = crud.get_pending_payment_for_application(db, application.id, payment_type)
+        if not payment:
+            order_id = f"MMC{datetime.now().strftime('%Y%m%d%H%M%S%f')}{application.id}"[:50]
+            payment_payload = schemas.PaymentCreate(
+                student_id=payload.student_id,
+                application_id=application.id,
+                payment_type=payment_type,
+                amount=payload.amount,
+                currency=settings.ccavenue_currency.upper(),
+                mode="CCAvenue",
+                status="Pending",
+                sub_account_id=ccavenue_sub_account_id(payment_type),
+                transaction_no=order_id,
+                paid_at=None,
+            )
+            payment = save_or_409(lambda: crud.create_payment(db, payment_payload))
     logger.info(
         "CCAvenue payment request initiated order=%s student_id=%s application_id=%s type=%s amount=%s sub_account_id=%s",
         payment.transaction_no,

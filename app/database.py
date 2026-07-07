@@ -8,11 +8,20 @@ from app.config import get_settings
 
 settings = get_settings()
 
-engine = create_engine(
-    settings.sqlalchemy_database_url,
-    pool_pre_ping=True,
-    pool_recycle=3600,
-)
+engine_options = {
+    "pool_pre_ping": True,
+    "pool_recycle": 1800,
+}
+if not settings.sqlalchemy_database_url.startswith("sqlite"):
+    engine_options.update(
+        {
+            "pool_size": 10,
+            "max_overflow": 20,
+            "pool_timeout": 30,
+        }
+    )
+
+engine = create_engine(settings.sqlalchemy_database_url, **engine_options)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

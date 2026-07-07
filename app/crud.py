@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer, joinedload, selectinload
 
 from app import models, schemas
 
@@ -132,7 +132,81 @@ def register_student(db: Session, payload: schemas.StudentRegister) -> models.St
 
 
 def list_students(db: Session, skip: int = 0, limit: int = 100) -> list[models.Student]:
-    return list(db.scalars(select(models.Student).offset(skip).limit(limit)))
+    return list(
+        db.scalars(
+            select(models.Student)
+            .order_by(models.Student.created_at.desc(), models.Student.id.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+    )
+
+
+def list_active_students_with_latest_applications(
+    db: Session,
+    skip: int = 0,
+    limit: int = 5000,
+) -> list[tuple[models.Student, models.HostelApplication | None]]:
+    students = list(
+        db.scalars(
+            select(models.Student)
+            .options(selectinload(models.Student.payments), selectinload(models.Student.receipts))
+            .where(models.Student.is_active.is_(True))
+            .order_by(models.Student.created_at.desc(), models.Student.id.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+    )
+    student_ids = [student.id for student in students]
+    if not student_ids:
+        return []
+    applications = list(
+        db.scalars(
+            select(models.HostelApplication)
+            .options(
+                joinedload(models.HostelApplication.hostel),
+                joinedload(models.HostelApplication.room),
+                defer(models.HostelApplication.student_photo_data),
+                defer(models.HostelApplication.aadhar_card_data),
+                defer(models.HostelApplication.admission_receipt_data),
+                defer(models.HostelApplication.income_certificate_data),
+                defer(models.HostelApplication.caste_certificate_data),
+            )
+            .where(models.HostelApplication.student_id.in_(student_ids))
+            .order_by(
+                models.HostelApplication.student_id,
+                models.HostelApplication.updated_at.desc(),
+                models.HostelApplication.id.desc(),
+            )
+        )
+    )
+    if applications:
+        document_rows = db.execute(
+            select(
+                models.HostelApplication.id,
+                (func.length(models.HostelApplication.student_photo_data) > 0).label("student_photo_data"),
+                (func.length(models.HostelApplication.aadhar_card_data) > 0).label("aadhar_card_data"),
+                (func.length(models.HostelApplication.admission_receipt_data) > 0).label("admission_receipt_data"),
+                (func.length(models.HostelApplication.income_certificate_data) > 0).label("income_certificate_data"),
+                (func.length(models.HostelApplication.caste_certificate_data) > 0).label("caste_certificate_data"),
+            ).where(models.HostelApplication.id.in_([application.id for application in applications]))
+        ).all()
+        flags_by_application = {
+            row.id: {
+                "student_photo_data": bool(row.student_photo_data),
+                "aadhar_card_data": bool(row.aadhar_card_data),
+                "admission_receipt_data": bool(row.admission_receipt_data),
+                "income_certificate_data": bool(row.income_certificate_data),
+                "caste_certificate_data": bool(row.caste_certificate_data),
+            }
+            for row in document_rows
+        }
+        for application in applications:
+            application._document_flags = flags_by_application.get(application.id, {})
+    latest_by_student: dict[int, models.HostelApplication] = {}
+    for application in applications:
+        latest_by_student.setdefault(application.student_id, application)
+    return [(student, latest_by_student.get(student.id)) for student in students]
 
 
 def get_student(db: Session, student_id: int) -> models.Student | None:
@@ -229,14 +303,14 @@ def create_room(db: Session, payload: schemas.RoomCreate) -> models.Room:
     return room
 
 
-def list_rooms(db: Session, hostel_id: int | None = None) -> list[models.Room]:
-    stmt = select(models.Room).order_by(models.Room.floor, models.Room.room_number)
+def list_rooms(db: Session, hostel_id: int | None = None, sync: bool = False) -> list[models.Room]:
+    stmt = select(models.Room).options(joinedload(models.Room.hostel)).order_by(models.Room.floor, models.Room.room_number)
     if hostel_id:
         stmt = stmt.where(models.Room.hostel_id == hostel_id)
     rooms = list(db.scalars(stmt))
-    for room in rooms:
-        sync_room_occupancy(db, room)
-    if rooms:
+    if sync:
+        for room in rooms:
+            sync_room_occupancy(db, room)
         db.commit()
     return rooms
 
@@ -756,7 +830,15 @@ def get_successful_payment_for_application(
 
 
 def list_payments(db: Session, student_id: int | None = None) -> list[models.Payment]:
-    stmt = select(models.Payment).order_by(models.Payment.created_at.desc())
+    stmt = (
+        select(models.Payment)
+        .options(
+            joinedload(models.Payment.student),
+            joinedload(models.Payment.application),
+            selectinload(models.Payment.receipts),
+        )
+        .order_by(models.Payment.created_at.desc())
+    )
     if student_id:
         stmt = stmt.where(models.Payment.student_id == student_id)
     return list(db.scalars(stmt))
@@ -767,7 +849,11 @@ def get_payment(db: Session, payment_id: int) -> models.Payment | None:
 
 
 def list_receipts(db: Session, student_id: int | None = None) -> list[models.PaymentReceipt]:
-    stmt = select(models.PaymentReceipt).order_by(models.PaymentReceipt.generated_at.desc())
+    stmt = (
+        select(models.PaymentReceipt)
+        .options(joinedload(models.PaymentReceipt.student), joinedload(models.PaymentReceipt.payment))
+        .order_by(models.PaymentReceipt.generated_at.desc())
+    )
     if student_id:
         stmt = stmt.where(models.PaymentReceipt.student_id == student_id)
     return list(db.scalars(stmt))

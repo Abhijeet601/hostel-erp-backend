@@ -443,6 +443,15 @@ def serialize_admin_receipt_only(receipt: models.PaymentReceipt) -> dict[str, An
 
 
 def serialize_application_documents(application: models.HostelApplication | None, include_data: bool = True) -> dict[str, Any]:
+    if not include_data and application is not None and hasattr(application, "_document_flags"):
+        flags = getattr(application, "_document_flags") or {}
+        return {
+            "student_photo_data": bool(flags.get("student_photo_data")),
+            "aadhar_card_data": bool(flags.get("aadhar_card_data")),
+            "admission_receipt_data": bool(flags.get("admission_receipt_data")),
+            "income_certificate_data": bool(flags.get("income_certificate_data")),
+            "caste_certificate_data": bool(flags.get("caste_certificate_data")),
+        }
     values = {
         "student_photo_data": application.student_photo_data if application else None,
         "aadhar_card_data": application.aadhar_card_data if application else None,
@@ -712,7 +721,7 @@ def list_admin_rooms(db: Session) -> dict[str, list[dict[str, Any]]]:
             occupied_counts[application.room_id] = occupied_counts.get(application.room_id, 0) + 1
     items = []
     for room in rooms:
-        hostel = crud.get_hostel(db, room.hostel_id)
+        hostel = room.hostel
         occupied = occupied_counts.get(room.id, 0)
         if room.status == "occupied" and occupied == 0:
             occupied = room.beds
@@ -1037,15 +1046,8 @@ def frontend_admin_students(
     db: Session = Depends(get_db),
 ):
     require_admin(authorization, db)
-    students = [
-        student
-        for student in crud.list_students(db, limit=max(limit, 5000))
-        if student.is_active
-    ]
-    items = []
-    for student in students:
-        application = crud.get_latest_student_application(db, student.id)
-        items.append(serialize_admin_student(student, application))
+    rows = crud.list_active_students_with_latest_applications(db, limit=max(limit, 5000))
+    items = [serialize_admin_student(student, application) for student, application in rows]
     return {"items": items}
 
 

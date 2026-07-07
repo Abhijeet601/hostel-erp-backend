@@ -13,7 +13,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app import crud, models, schemas
+from app import crud, models, receipt_service, schemas
 from app.database import get_db
 from app.document_storage import upload_application_documents
 
@@ -44,6 +44,14 @@ class FrontendAdminLoginRequest(BaseModel):
     email: str | None = None
     username: str | None = None
     password: str = Field(..., min_length=1, max_length=128)
+
+
+class FrontendManualPaymentRequest(BaseModel):
+    identifier: str = Field(..., min_length=1, max_length=160)
+    payment_type: str = Field(..., min_length=1, max_length=80)
+    amount: Decimal | None = None
+    transaction_reference: str | None = Field(None, max_length=80)
+    note: str | None = Field(None, max_length=255)
 
 
 class FrontendPaymentRequest(BaseModel):
@@ -725,6 +733,111 @@ def build_admin_dashboard(db: Session) -> dict[str, Any]:
     }
 
 
+def normalize_manual_payment_type(value: str | None) -> str:
+    text_value = (value or "").strip().lower()
+    if "hostel" in text_value:
+        return "Hostel Admission Fee"
+    if "registration" in text_value or "application" in text_value:
+        return "Registration Fee"
+    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Select registration fee or hostel fee.")
+
+
+def receipt_type_for_payment(payment_type: str) -> str:
+    return "hostel_admission" if "hostel" in payment_type.lower() else "application_registration"
+
+
+def resolve_manual_payment_application(db: Session, identifier: str) -> models.HostelApplication:
+    value = (identifier or "").strip()
+    if not value:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Enter student code, application number, email, mobile, or admission ID.")
+    lowered = value.lower()
+    application = db.scalar(
+        select(models.HostelApplication)
+        .where(or_(models.HostelApplication.application_no == value, models.HostelApplication.admission_id == value))
+        .order_by(models.HostelApplication.updated_at.desc(), models.HostelApplication.id.desc())
+        .limit(1)
+    )
+    if not application and value.isdigit():
+        application = db.get(models.HostelApplication, int(value))
+    if application:
+        return application
+    student = db.scalar(
+        select(models.Student)
+        .where(
+            or_(
+                models.Student.student_code == value,
+                models.Student.email == lowered,
+                models.Student.mobile == value,
+                models.Student.name == value,
+            )
+        )
+        .limit(1)
+    )
+    if not student and value.isdigit():
+        student = db.get(models.Student, int(value))
+    if not student:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student or application not found.")
+    application = crud.get_latest_student_application(db, student.id)
+    if not application:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No application found for this student.")
+    return application
+
+
+def expected_manual_payment_amount(application: models.HostelApplication, payment_type: str) -> Decimal:
+    if payment_type == "Registration Fee":
+        app_type = (application.application_type or "new").strip().lower()
+        return Decimal("100") if app_type in {"existing", "renewal"} else Decimal("1000")
+    if not application.hostel:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Hostel allotment is required before hostel fee can be completed.")
+    hostel_fee = application.hostel.fee or Decimal("0")
+    if hostel_fee:
+        return Decimal(hostel_fee)
+    hostel_name = (application.hostel.name or "").lower()
+    if "mahima" in hostel_name:
+        return Decimal("12000")
+    if "vaidehi" in hostel_name:
+        return Decimal("10000")
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Hostel fee is not configured for this hostel.")
+
+
+def application_receipt_exists(db: Session, application: models.HostelApplication, receipt_type: str) -> bool:
+    return bool(
+        db.scalar(
+            select(models.PaymentReceipt.id)
+            .where(
+                models.PaymentReceipt.student_id == application.student_id,
+                models.PaymentReceipt.receipt_type == receipt_type,
+                models.PaymentReceipt.application_number == application.application_no,
+            )
+            .limit(1)
+        )
+    )
+
+
+def successful_application_payment_exists(db: Session, application: models.HostelApplication, payment_type: str) -> bool:
+    return bool(
+        crud.get_successful_payment_for_application(db, application.id, payment_type)
+        or application_receipt_exists(db, application, receipt_type_for_payment(payment_type))
+    )
+
+
+def validate_manual_payment(db: Session, application: models.HostelApplication, payment_type: str, amount: Decimal) -> None:
+    if (application.application_status or application.status or "").lower() == "draft":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Submit the application before completing payment.")
+    expected_amount = expected_manual_payment_amount(application, payment_type)
+    if amount != expected_amount:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{payment_type} amount must be Rs. {expected_amount:.2f}.")
+    if successful_application_payment_exists(db, application, payment_type):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"{payment_type} is already completed for this application.")
+    if payment_type == "Hostel Admission Fee":
+        if not successful_application_payment_exists(db, application, "Registration Fee"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Complete registration fee before hostel fee.")
+        if (application.application_status or "").lower() not in {"shortlisted", "selected", "approved"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Application must be shortlisted before hostel fee.")
+        if not application.hostel_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Hostel allotment is required before hostel fee.")
+
+
 def list_admin_rooms(db: Session) -> dict[str, list[dict[str, Any]]]:
     rooms = crud.list_rooms(db)
     occupied_counts: dict[int, int] = {}
@@ -1102,6 +1215,75 @@ def frontend_admin_payments(
     )
     items.sort(key=lambda item: item.get("payment_date") or datetime.min, reverse=True)
     return {"items": items}
+
+
+@router.post("/admin/payments/manual", response_model=schemas.PaymentReceiptRead)
+@router.post("/api/admin/payments/manual", response_model=schemas.PaymentReceiptRead)
+def frontend_admin_manual_payment(
+    payload: FrontendManualPaymentRequest,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    admin = require_admin(authorization, db)
+    application = resolve_manual_payment_application(db, payload.identifier)
+    student = application.student
+    if not student or not student.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Active student account not found for this application.")
+    payment_type = normalize_manual_payment_type(payload.payment_type)
+    amount = payload.amount if payload.amount is not None else expected_manual_payment_amount(application, payment_type)
+    validate_manual_payment(db, application, payment_type, amount)
+    timestamp = datetime.now()
+    reference = (payload.transaction_reference or "").strip()
+    transaction_no = reference or f"MANUAL-{timestamp.strftime('%Y%m%d%H%M%S%f')}-{application.id}"[:50]
+    if crud.get_payment_by_transaction_no(db, transaction_no):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Transaction reference already exists.")
+    payment = crud.create_payment(
+        db,
+        schemas.PaymentCreate(
+            student_id=student.id,
+            application_id=application.id,
+            payment_type=payment_type,
+            amount=amount,
+            currency="INR",
+            mode="Manual Admin Entry",
+            status="Paid",
+            tracking_id=transaction_no,
+            bank_ref_no=reference or None,
+            failure_reason="",
+            sub_account_id="Manual",
+            gateway_response=json.dumps(
+                {
+                    "source": "admin_manual_payment",
+                    "admin_id": admin.id,
+                    "admin_username": admin.username,
+                    "note": payload.note or "",
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            transaction_no=transaction_no,
+            paid_at=timestamp,
+        ),
+    )
+    receipt = receipt_service.generate_receipt_pdf(db, payment, receipt_type_for_payment(payment_type))
+    log_activity(
+        db,
+        entity_type="payment",
+        entity_id=payment.id,
+        action="manual_payment_completed",
+        admin_id=admin.id,
+        new_values={
+            "student_id": student.id,
+            "application_id": application.id,
+            "payment_type": payment_type,
+            "amount": amount,
+            "transaction_no": transaction_no,
+            "receipt_id": receipt.id,
+            "note": payload.note,
+        },
+    )
+    db.commit()
+    return receipt
 
 
 @router.get("/admin/hostel/rooms")

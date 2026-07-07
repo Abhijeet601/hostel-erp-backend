@@ -125,10 +125,18 @@ def qr_data_uri(value: str) -> str:
 def generate_receipt_number(db: Session, receipt_type: str) -> str:
     prefix = "HAP" if receipt_type == "hostel_admission" else "OHA"
     year = datetime.now().year
-    count = db.query(models.PaymentReceipt).filter(
-        models.PaymentReceipt.receipt_number.like(f"{prefix}{year}%")
-    ).count()
-    return f"{prefix}{year}{count + 1:06d}"
+    receipt_numbers = db.scalars(
+        select(models.PaymentReceipt.receipt_number).where(
+            models.PaymentReceipt.receipt_number.like(f"{prefix}{year}%")
+        )
+    )
+    max_sequence = 0
+    base_length = len(prefix) + 4
+    for receipt_number in receipt_numbers:
+        suffix = str(receipt_number or "")[base_length:]
+        if suffix.isdigit():
+            max_sequence = max(max_sequence, int(suffix))
+    return f"{prefix}{year}{max_sequence + 1:06d}"
 
 
 def infer_receipt_type(payment: models.Payment) -> str:
@@ -383,5 +391,7 @@ def ensure_receipts_for_successful_payments(db: Session, student_id: int | None 
             generate_receipt_pdf(db, payment, receipt_type)
             generated += 1
         except Exception:
-            logger.exception("Could not auto-generate missing receipt for payment %s.", payment.id)
+            payment_id = payment.id
+            db.rollback()
+            logger.exception("Could not auto-generate missing receipt for payment %s.", payment_id)
     return generated

@@ -626,15 +626,24 @@ def serialize_application_form(student: models.Student, application: models.Host
 
 
 def build_student_dashboard(student: models.Student, db: Session) -> dict[str, Any]:
+    receipt_service.ensure_receipts_for_successful_payments(db, student_id=student.id)
     application = crud.get_latest_student_application(db, student.id)
     payments = crud.list_payments(db, student_id=student.id)
     receipts = crud.list_receipts(db, student_id=student.id)
     registration_payment = next(
-        (payment for payment in payments if "registration" in (payment.payment_type or "").lower()),
+        (
+            payment for payment in payments
+            if "registration" in (payment.payment_type or "").lower()
+            and normalize_payment_state(payment.status) == "paid"
+        ),
         None,
     )
     hostel_payment = next(
-        (payment for payment in payments if "hostel" in (payment.payment_type or "").lower()),
+        (
+            payment for payment in payments
+            if "hostel" in (payment.payment_type or "").lower()
+            and normalize_payment_state(payment.status) == "paid"
+        ),
         None,
     )
     registration_receipt = next(
@@ -657,7 +666,8 @@ def build_student_dashboard(student: models.Student, db: Session) -> dict[str, A
         "application_status": status_value,
         "form_status": (application.application_status if application else "not_started").lower(),
         "shortlisted": shortlisted,
-        "application_payment_status": "paid" if registration_payment else "pending",
+        "application_payment_status": "paid" if (registration_payment or registration_receipt) else "pending",
+        "hostel_payment_status": "paid" if (hostel_payment or hostel_receipt) else "pending",
         "hostel_receipt": bool(hostel_receipt),
         "allocated_hostel": application.hostel.name if application and application.hostel else None,
         "preferred_hostel": application.hostel.name if application and application.hostel else None,

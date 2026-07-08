@@ -1188,6 +1188,15 @@ def payment_return_page(title: str, message: str, receipt_url: str | None = None
     )
 
 
+def generate_payment_receipt_safely(db: Session, payment: models.Payment, receipt_type: str) -> models.PaymentReceipt | None:
+    try:
+        return receipt_service.generate_receipt_pdf(db, payment, receipt_type)
+    except Exception:
+        db.rollback()
+        logger.exception("Receipt generation failed for paid payment order=%s.", payment.transaction_no)
+        return None
+
+
 @app.post("/api/payment/initiate", response_model=schemas.PaymentInitiateResponse)
 def initiate_payment(payload: schemas.PaymentInitiateRequest, db: Session = Depends(get_db)):
     application = validate_payment_initiation(payload, db)
@@ -1234,6 +1243,9 @@ def payment_status(order_id: str, db: Session = Depends(get_db)):
     payment = crud.get_payment_by_transaction_no(db, order_id)
     if not payment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment order not found.")
+    if (payment.status or "").lower() in {"paid", "success", "completed"}:
+        receipt_service.ensure_receipts_for_successful_payments(db, student_id=payment.student_id, max_generate=1)
+        db.refresh(payment)
     receipt = payment.receipts[0] if payment.receipts else None
     status_key = (payment.status or "").lower()
     return {
@@ -1263,9 +1275,13 @@ def handle_ccavenue_response(enc_resp: str, db: Session) -> HTMLResponse:
     existing_status = (payment.status or "").lower()
     if existing_status in {"paid", "success", "completed"}:
         receipt_type = "hostel_admission" if "hostel" in payment.payment_type.lower() else "application_registration"
-        receipt = receipt_service.generate_receipt_pdf(db, payment, receipt_type)
-        receipt_url = receipt.pdf_url or f"/receipts/{receipt.id}/download"
-        return payment_return_page("Payment Already Verified", "This payment was already verified. Your receipt is available.", receipt_url)
+        receipt = generate_payment_receipt_safely(db, payment, receipt_type)
+        receipt_url = (receipt.pdf_url or f"/receipts/{receipt.id}/download") if receipt else None
+        return payment_return_page(
+            "Payment Already Verified",
+            "This payment was already verified. Your receipt will be available in the ERP receipts page.",
+            receipt_url,
+        )
     order_status = (values.get("order_status") or "").strip()
     tracking_id = values.get("tracking_id") or ""
     bank_ref_no = values.get("bank_ref_no") or ""
@@ -1325,9 +1341,13 @@ def handle_ccavenue_response(enc_resp: str, db: Session) -> HTMLResponse:
             paid_at=paid_at,
         )
         receipt_type = "hostel_admission" if "hostel" in payment.payment_type.lower() else "application_registration"
-        receipt = receipt_service.generate_receipt_pdf(db, payment, receipt_type)
-        receipt_url = receipt.pdf_url or f"/receipts/{receipt.id}/download"
-        return payment_return_page("Payment Successful", "Your payment has been verified and the receipt has been generated.", receipt_url)
+        receipt = generate_payment_receipt_safely(db, payment, receipt_type)
+        receipt_url = (receipt.pdf_url or f"/receipts/{receipt.id}/download") if receipt else None
+        return payment_return_page(
+            "Payment Successful",
+            "Your payment has been verified. Your receipt is available now or will appear shortly in the ERP receipts page.",
+            receipt_url,
+        )
     failed_status = "Cancelled" if order_status.lower() in {"aborted", "cancelled", "canceled", "cancel"} else (order_status or "Failed")
     crud.update_payment_gateway_result(
         db,
@@ -1367,6 +1387,7 @@ def list_payments(
     db: Session = Depends(get_db),
 ):
     scoped_student_id = authorized_receipt_student_id(db, student_id, authorization, token)
+    receipt_service.ensure_receipts_for_successful_payments(db, student_id=scoped_student_id, max_generate=1)
     return crud.list_payments(db, student_id=scoped_student_id)
 
 

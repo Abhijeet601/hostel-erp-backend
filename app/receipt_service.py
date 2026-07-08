@@ -9,8 +9,9 @@ from pathlib import Path
 
 import qrcode
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 from sqlalchemy.orm import joinedload, selectinload
 from xhtml2pdf import pisa
 
@@ -327,25 +328,41 @@ def generate_receipt_pdf(
     payment: models.Payment,
     receipt_type: str | None = None,
 ) -> models.PaymentReceipt:
+    payment_id = payment.id
     receipt_type = receipt_type or infer_receipt_type(payment)
-    existing = db.query(models.PaymentReceipt).filter(
-        models.PaymentReceipt.payment_id == payment.id,
-        models.PaymentReceipt.receipt_type == receipt_type,
-    ).one_or_none()
-    receipt = existing or models.PaymentReceipt(
-        receipt_number=generate_receipt_number(db, receipt_type),
-        application_number=payment.application.application_no if payment.application else None,
-        student_id=payment.student_id,
-        receipt_type=receipt_type,
-        payment_id=payment.id,
-        hostel_name=payment.application.hostel.name if payment.application and payment.application.hostel else None,
-        room_number=payment.application.room.room_number if payment.application and payment.application.room else None,
-        amount=payment.amount,
-        transaction_id=payment.transaction_no,
-    )
-    if not existing:
+    receipt = None
+    for _ in range(5):
+        payment = db.get(models.Payment, payment_id)
+        if not payment:
+            raise ValueError(f"Payment {payment_id} not found.")
+        existing = db.query(models.PaymentReceipt).filter(
+            models.PaymentReceipt.payment_id == payment.id,
+            models.PaymentReceipt.receipt_type == receipt_type,
+        ).one_or_none()
+        if existing:
+            receipt = existing
+            break
+        receipt = models.PaymentReceipt(
+            receipt_number=generate_receipt_number(db, receipt_type),
+            application_number=payment.application.application_no if payment.application else None,
+            student_id=payment.student_id,
+            receipt_type=receipt_type,
+            payment_id=payment.id,
+            hostel_name=payment.application.hostel.name if payment.application and payment.application.hostel else None,
+            room_number=payment.application.room.room_number if payment.application and payment.application.room else None,
+            amount=payment.amount,
+            transaction_id=payment.transaction_no,
+        )
         db.add(receipt)
-        db.flush()
+        try:
+            db.flush()
+            break
+        except IntegrityError:
+            db.rollback()
+            receipt = None
+            continue
+    if receipt is None:
+        raise RuntimeError(f"Could not create receipt for payment {payment_id}.")
 
     receipt.qr_code = verification_url(receipt.receipt_number)
 

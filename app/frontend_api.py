@@ -507,6 +507,39 @@ def normalize_aadhaar(value: str | None) -> str | None:
     return digits or text
 
 
+def release_deleted_student_unique_fields(db: Session, student: models.Student) -> None:
+    deleted_key = f"deleted{student.id}"
+    if not str(student.student_code or "").startswith(f"{deleted_key}-"):
+        student.student_code = f"{deleted_key}-{student.student_code}"[:32]
+    if not str(student.email or "").startswith(f"{deleted_key}-"):
+        student.email = f"{deleted_key}-{student.email}"[:160]
+    if not str(student.mobile or "").startswith(deleted_key):
+        student.mobile = f"{deleted_key}-{student.mobile}"[:20]
+    db.add(student)
+
+
+def release_existing_deleted_conflicts(db: Session, email: str | None = None, mobile: str | None = None) -> None:
+    checks = []
+    if email:
+        checks.append(models.Student.email == email)
+    if mobile:
+        checks.append(models.Student.mobile == mobile)
+    if not checks:
+        return
+    deleted_students = list(
+        db.scalars(
+            select(models.Student).where(
+                models.Student.is_active.is_(False),
+                or_(*checks),
+            )
+        )
+    )
+    for student in deleted_students:
+        release_deleted_student_unique_fields(db, student)
+    if deleted_students:
+        db.commit()
+
+
 def log_activity(
     db: Session,
     *,
@@ -919,9 +952,11 @@ def register_student_compat(payload: FrontendRegisterRequest, db: Session) -> di
     if len(mobile) > 10:
         mobile = mobile[-10:]
     name = (payload.name or payload.email.split("@")[0]).strip()
+    email = str(payload.email).strip().lower()
+    release_existing_deleted_conflicts(db, email=email, mobile=mobile)
     register_payload = schemas.StudentRegister(
         name=name,
-        email=payload.email,
+        email=email,
         mobile=mobile,
         date_of_birth=payload.date_of_birth,
         password=payload.password,
@@ -1416,6 +1451,7 @@ def frontend_update_student_account(
     aadhaar = normalize_aadhaar(payload.aadhaar_number or payload.aadhar_number)
     course = clean_text(payload.course_name or payload.course)
     email = str(payload.email).strip().lower() if payload.email else None
+    release_existing_deleted_conflicts(db, email=email, mobile=mobile)
 
     duplicate_checks = []
     if student_code and student_code != student.student_code:
@@ -1561,20 +1597,32 @@ def frontend_delete_student(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    require_admin(authorization, db)
+    admin = require_admin(authorization, db)
     student = crud.get_student(db, student_id)
     if not student:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
+    old_values = {
+        "student_code": student.student_code,
+        "email": student.email,
+        "mobile": student.mobile,
+        "is_active": student.is_active,
+    }
     student.is_active = False
     student.password_hash = None
-    db.add(student)
+    release_deleted_student_unique_fields(db, student)
     log_activity(
         db,
         entity_type="student",
         entity_id=student.id,
         action="account_deactivated",
-        admin_id=require_admin(authorization, db).id,
-        new_values={"is_active": False},
+        admin_id=admin.id,
+        old_values=old_values,
+        new_values={
+            "student_code": student.student_code,
+            "email": student.email,
+            "mobile": student.mobile,
+            "is_active": False,
+        },
     )
     db.commit()
-    return {"status": "deactivated", "message": "Student ID deleted successfully. Login access has been revoked."}
+    return {"status": "deactivated", "message": "Student ID deleted successfully. Login access has been revoked and email/mobile can be reused."}

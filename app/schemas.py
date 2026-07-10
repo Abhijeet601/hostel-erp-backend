@@ -368,7 +368,7 @@ class AdminCreate(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
     full_name: str = Field(..., max_length=120)
-    role: Literal["admin", "super_admin"] = "admin"
+    role: Literal["admin", "super_admin", "view_only"] = "admin"
     is_active: bool = True
 
 

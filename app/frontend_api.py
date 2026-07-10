@@ -127,6 +127,13 @@ def require_admin(authorization: str | None, db: Session) -> models.AdminUser:
     return admin
 
 
+def require_write_admin(authorization: str | None, db: Session) -> models.AdminUser:
+    admin = require_admin(authorization, db)
+    if (admin.role or "").lower() == "view_only":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This admin account has view-only access.")
+    return admin
+
+
 def map_frontend_fields(data: dict[str, Any]) -> dict[str, Any]:
     from app.main import normalize_application_data
 
@@ -1270,7 +1277,7 @@ def frontend_admin_manual_payment(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    admin = require_admin(authorization, db)
+    admin = require_write_admin(authorization, db)
     application = resolve_manual_payment_application(db, payload.identifier)
     student = application.student
     if not student or not student.is_active:
@@ -1350,7 +1357,7 @@ def frontend_verify_student(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    require_admin(authorization, db)
+    require_write_admin(authorization, db)
     application = crud.get_latest_student_application(db, student_id)
     if not application:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
@@ -1370,7 +1377,7 @@ def frontend_shortlist_student(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    require_admin(authorization, db)
+    require_write_admin(authorization, db)
     application = crud.get_latest_student_application(db, student_id)
     if not application:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
@@ -1400,7 +1407,7 @@ def frontend_allocate_hostel(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    require_admin(authorization, db)
+    require_write_admin(authorization, db)
     application = crud.get_latest_student_application(db, student_id)
     if not application:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
@@ -1440,7 +1447,7 @@ def frontend_update_student_account(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    admin = require_admin(authorization, db)
+    admin = require_write_admin(authorization, db)
     student = crud.get_student(db, student_id)
     if not student:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
@@ -1550,7 +1557,7 @@ def frontend_admin_reset_student_password(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    admin = require_admin(authorization, db)
+    admin = require_write_admin(authorization, db)
     student = crud.get_student(db, student_id)
     if not student:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
@@ -1597,7 +1604,7 @@ def frontend_delete_student(
     authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    admin = require_admin(authorization, db)
+    admin = require_write_admin(authorization, db)
     student = crud.get_student(db, student_id)
     if not student:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")

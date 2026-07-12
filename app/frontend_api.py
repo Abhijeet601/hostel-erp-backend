@@ -76,6 +76,27 @@ class FrontendAllocateHostelRequest(BaseModel):
     bed_number: str | None = None
 
 
+class FrontendBulkShortlistRequest(BaseModel):
+    student_ids: list[int] = Field(default_factory=list)
+    allotted_category: str | None = None
+
+
+class FrontendRoomAllocationRow(BaseModel):
+    student_id: str | int | None = None
+    application_id: str | int | None = None
+    student_name: str | None = None
+    course: str | None = None
+    category: str | None = None
+    merit_status: str | None = None
+    hostel_name: str | None = None
+    room_number: str | int | None = None
+    bed_number: str | int | None = None
+
+
+class FrontendRoomAllocationImportRequest(BaseModel):
+    rows: list[FrontendRoomAllocationRow] = Field(default_factory=list)
+
+
 PASSWORD_RESET_TOKEN_EXPIRE_MINUTES = 15
 _forgot_password_attempts: dict[str, list[datetime]] = {}
 
@@ -237,8 +258,10 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
         lowered = status_value.lower()
         if lowered in {"verified", "approved"}:
             verification_status = "verified"
-        if lowered == "selected":
-            shortlist_status = "selected"
+        if lowered in {"room allocated", "room_allocated", "selected"}:
+            shortlist_status = "room_allocated"
+        elif lowered == "published":
+            shortlist_status = "published"
         elif lowered == "shortlisted":
             shortlist_status = "shortlisted"
     hostel_name = application.hostel.name if application and application.hostel else None
@@ -699,7 +722,7 @@ def build_student_dashboard(student: models.Student, db: Session) -> dict[str, A
         None,
     )
     status_value = application.application_status if application else "Not Started"
-    shortlisted = bool(application and (application.application_status or "").lower() in {"shortlisted", "selected", "approved"})
+    shortlisted = bool(application and (application.application_status or "").lower() in {"shortlisted", "published", "room allocated", "selected", "approved"})
     return {
         "student_name": student.name,
         "name": student.name,
@@ -716,6 +739,7 @@ def build_student_dashboard(student: models.Student, db: Session) -> dict[str, A
         "allocated_hostel": application.hostel.name if application and application.hostel else None,
         "preferred_hostel": application.hostel.name if application and application.hostel else None,
         "room_number": application.room.room_number if application and application.room else None,
+        "bed_number": application.bed if application else None,
         "payment_history": [
             {
                 "id": payment.id,
@@ -886,7 +910,7 @@ def validate_manual_payment(db: Session, application: models.HostelApplication, 
     if payment_type == "Hostel Admission Fee":
         if not successful_application_payment_exists(db, application, "Registration Fee"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Complete registration fee before hostel fee.")
-        if (application.application_status or "").lower() not in {"shortlisted", "selected", "approved"}:
+        if (application.application_status or "").lower() not in {"shortlisted", "published", "room allocated", "selected", "approved"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Application must be shortlisted before hostel fee.")
         if not application.hostel_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Hostel allotment is required before hostel fee.")
@@ -894,17 +918,34 @@ def validate_manual_payment(db: Session, application: models.HostelApplication, 
 
 def list_admin_rooms(db: Session) -> dict[str, list[dict[str, Any]]]:
     rooms = crud.list_rooms(db)
+    applications = crud.list_applications(db)
     occupied_counts: dict[int, int] = {}
-    for application in crud.list_applications(db):
-        if application.room_id:
+    for application in applications:
+        if (
+            application.room_id
+            and application.bed
+            and (application.allocation_status or "") != "vacated"
+            and (application.application_status or "") != "Draft"
+        ):
             occupied_counts[application.room_id] = occupied_counts.get(application.room_id, 0) + 1
     items = []
     for room in rooms:
         hostel = room.hostel
+        occupied_applications = [
+            application
+            for application in applications
+            if application.room_id == room.id
+            and (application.allocation_status or "") != "vacated"
+            and (application.application_status or "") != "Draft"
+            and application.bed
+        ]
+        occupied_bed_numbers = sorted({crud.normalize_bed_value(application.bed) for application in occupied_applications if application.bed})
+        bed_labels = ["A", "B", "C"][: max(int(room.beds or 0), 0)]
+        available_bed_numbers = [bed for bed in bed_labels if bed not in occupied_bed_numbers]
         occupied = occupied_counts.get(room.id, 0)
         if room.status == "occupied" and occupied == 0:
             occupied = room.beds
-        available_beds = max(room.beds - occupied, 0)
+        available_beds = len(available_bed_numbers)
         items.append(
             {
                 "id": room.id,
@@ -913,10 +954,150 @@ def list_admin_rooms(db: Session) -> dict[str, list[dict[str, Any]]]:
                 "block_name": str(room.floor),
                 "bed_capacity": room.beds,
                 "available_beds": available_beds,
+                "occupied_bed_numbers": occupied_bed_numbers,
+                "available_bed_numbers": available_bed_numbers,
+                "available_bed_labels": available_bed_numbers,
                 "status": "available" if available_beds > 0 else "occupied",
             }
         )
     return {"items": items}
+
+
+def _normalize_sheet_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_sheet_key(value: Any) -> str:
+    return _normalize_sheet_value(value).lower()
+
+
+def _latest_applications_by_student(db: Session) -> dict[int, models.HostelApplication]:
+    latest: dict[int, models.HostelApplication] = {}
+    for application in crud.list_applications(db):
+        current = latest.get(application.student_id)
+        if not current or application.id > current.id:
+            latest[application.student_id] = application
+    return latest
+
+
+def _match_allocation_row(
+    row: FrontendRoomAllocationRow,
+    students: list[models.Student],
+    applications: list[models.HostelApplication],
+    latest_by_student: dict[int, models.HostelApplication],
+) -> tuple[models.Student | None, models.HostelApplication | None]:
+    student_tokens = [_normalize_sheet_value(row.student_id)]
+    application_tokens = [_normalize_sheet_value(row.application_id)]
+    for token in application_tokens:
+        if not token:
+            continue
+        for application in applications:
+            if token == str(application.id) or token.lower() == (application.application_no or "").lower():
+                return application.student, application
+        for student in students:
+            if token.lower() == (student.student_code or "").lower():
+                return student, latest_by_student.get(student.id)
+    for token in student_tokens:
+        if not token:
+            continue
+        for student in students:
+            if token == str(student.id) or token.lower() == (student.student_code or "").lower():
+                return student, latest_by_student.get(student.id)
+    return None, None
+
+
+def validate_room_allocation_rows(
+    db: Session,
+    rows: list[FrontendRoomAllocationRow],
+) -> dict[str, Any]:
+    students = [student for student in crud.list_students(db, limit=10000) if student.is_active]
+    applications = crud.list_applications(db)
+    latest_by_student = _latest_applications_by_student(db)
+    hostels = {hostel.name.lower(): hostel for hostel in crud.list_hostels(db)}
+    rooms = crud.list_rooms(db)
+    rooms_by_key = {
+        (room.hostel.name.lower() if room.hostel else "", str(room.room_number).strip().lower()): room
+        for room in rooms
+    }
+    existing_beds: dict[tuple[int, str], int] = {}
+    for application in applications:
+        if not application.room_id or not application.bed:
+            continue
+        if (application.allocation_status or "") == "vacated" or (application.application_status or "") == "Draft":
+            continue
+        bed = crud.normalize_bed_value(application.bed)
+        if bed:
+            existing_beds[(application.room_id, bed)] = application.id
+    upload_beds: dict[tuple[int, str], int] = {}
+    results: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        student, application = _match_allocation_row(row, students, applications, latest_by_student)
+        result = {
+            "row_number": index,
+            "status": "failed",
+            "message": "",
+            "student_id": student.student_code if student else _normalize_sheet_value(row.student_id),
+            "application_id": application.application_no if application else _normalize_sheet_value(row.application_id),
+            "student_name": student.name if student else _normalize_sheet_value(row.student_name),
+            "hostel_name": _normalize_sheet_value(row.hostel_name),
+            "room_number": _normalize_sheet_value(row.room_number),
+            "bed_number": _normalize_sheet_value(row.bed_number),
+        }
+        if not student or not application:
+            result["message"] = "Student/Application ID not found."
+            results.append(result)
+            continue
+        if not result["hostel_name"] and not result["room_number"] and not result["bed_number"]:
+            result["status"] = "skipped"
+            result["message"] = "No room allocation data provided."
+            results.append(result)
+            continue
+        hostel = hostels.get(result["hostel_name"].lower())
+        if not hostel:
+            result["message"] = "Hostel name not found."
+            results.append(result)
+            continue
+        room = rooms_by_key.get((hostel.name.lower(), result["room_number"].lower()))
+        if not room:
+            result["message"] = "Room number not found in the selected hostel."
+            results.append(result)
+            continue
+        bed = crud.normalize_bed_value(result["bed_number"])
+        if bed not in {"A", "B", "C"}:
+            result["message"] = "Bed number must be A, B, or C."
+            results.append(result)
+            continue
+        existing_application_id = existing_beds.get((room.id, bed))
+        if existing_application_id and existing_application_id != application.id:
+            result["message"] = "Room/bed is already allocated to another student."
+            results.append(result)
+            continue
+        upload_owner = upload_beds.get((room.id, bed))
+        if upload_owner and upload_owner != application.id:
+            result["message"] = "Duplicate room/bed in uploaded sheet."
+            results.append(result)
+            continue
+        upload_beds[(room.id, bed)] = application.id
+        result.update(
+            {
+                "status": "valid",
+                "message": "Ready to allocate.",
+                "student_db_id": student.id,
+                "application_db_id": application.id,
+                "room_id": room.id,
+                "bed_number": bed,
+            }
+        )
+        results.append(result)
+    return {
+        "items": results,
+        "summary": {
+            "total": len(results),
+            "valid": sum(1 for item in results if item["status"] == "valid"),
+            "failed": sum(1 for item in results if item["status"] == "failed"),
+            "skipped": sum(1 for item in results if item["status"] == "skipped"),
+        },
+    }
 
 
 def resolve_login_identifier(payload: FrontendLoginRequest | FrontendAdminLoginRequest) -> str:
@@ -1353,6 +1534,112 @@ def frontend_admin_rooms(
     return list_admin_rooms(db)
 
 
+@router.post("/admin/merit/bulk-shortlist")
+@router.post("/api/admin/merit/bulk-shortlist")
+def frontend_bulk_shortlist_students(
+    payload: FrontendBulkShortlistRequest,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    require_write_admin(authorization, db)
+    student_ids = sorted({int(student_id) for student_id in payload.student_ids if student_id})
+    if not student_ids:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Select at least one student.")
+    updated = 0
+    failed: list[dict[str, Any]] = []
+    for student_id in student_ids:
+        application = crud.get_latest_student_application(db, student_id)
+        if not application:
+            failed.append({"student_id": student_id, "reason": "Application not found."})
+            continue
+        if payload.allotted_category:
+            application.allotted_category = clean_text(payload.allotted_category)[:20]
+        application.application_status = "Shortlisted"
+        application.status = "Shortlisted"
+        application.allocation_status = application.allocation_status or "pending"
+        updated += 1
+    db.commit()
+    return {"updated": updated, "failed": failed}
+
+
+@router.post("/admin/merit/room-allocation/preview")
+@router.post("/api/admin/merit/room-allocation/preview")
+def frontend_preview_room_allocation(
+    payload: FrontendRoomAllocationImportRequest,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    require_write_admin(authorization, db)
+    if not payload.rows:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Upload at least one allocation row.")
+    return validate_room_allocation_rows(db, payload.rows)
+
+
+@router.post("/admin/merit/room-allocation/import")
+@router.post("/api/admin/merit/room-allocation/import")
+def frontend_import_room_allocation(
+    payload: FrontendRoomAllocationImportRequest,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    require_write_admin(authorization, db)
+    validation = validate_room_allocation_rows(db, payload.rows)
+    imported = 0
+    for item in validation["items"]:
+        if item["status"] != "valid":
+            continue
+        application = crud.get_application(db, int(item["application_db_id"]))
+        if not application:
+            item["status"] = "failed"
+            item["message"] = "Application not found during import."
+            continue
+        try:
+            crud.assign_application_bed(
+                db,
+                application,
+                room_id=int(item["room_id"]),
+                bed=item["bed_number"],
+                allocation_status="allocated",
+            )
+            application.application_status = "Room Allocated"
+            application.status = "Room Allocated"
+            imported += 1
+        except HTTPException as exc:
+            item["status"] = "failed"
+            item["message"] = str(exc.detail)
+    db.commit()
+    validation["summary"]["imported"] = imported
+    validation["summary"]["failed"] = sum(1 for item in validation["items"] if item["status"] == "failed")
+    validation["summary"]["skipped"] = sum(1 for item in validation["items"] if item["status"] == "skipped")
+    return validation
+
+
+@router.post("/admin/merit/publish")
+@router.post("/api/admin/merit/publish")
+def frontend_publish_merit(
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    require_write_admin(authorization, db)
+    published = 0
+    room_allocated = 0
+    for application in crud.list_applications(db):
+        current = (application.application_status or "").lower()
+        if current in {"shortlisted", "published", "selected", "room allocated"}:
+            if application.room_id and application.bed:
+                application.application_status = "Room Allocated"
+                application.status = "Room Allocated"
+                application.allocation_status = "allocated"
+                room_allocated += 1
+            else:
+                application.application_status = "Published"
+                application.status = "Published"
+                application.allocation_status = application.allocation_status or "pending"
+                published += 1
+    db.commit()
+    return {"published": published, "room_allocated": room_allocated}
+
+
 @router.patch("/admin/students/{student_id}/verify")
 @router.patch("/api/admin/students/{student_id}/verify")
 def frontend_verify_student(
@@ -1431,18 +1718,24 @@ def frontend_allocate_hostel(
                 models.Room.room_number == payload.room_number,
             )
         )
-    if room:
+    if room and payload.bed_number:
+        crud.assign_application_bed(
+            db,
+            application,
+            room_id=room.id,
+            bed=payload.bed_number,
+            allocation_status="allocated",
+        )
+        application.application_status = "Room Allocated"
+        application.status = "Room Allocated"
+    elif room:
         application.hostel_id = room.hostel_id
         application.room_id = room.id
-        if payload.bed_number:
-            application.bed = clean_text(payload.bed_number)[:20]
-        application.block = room.block
-        application.floor = str(room.floor) if room.floor is not None else None
-    elif payload.bed_number:
-        application.bed = clean_text(payload.bed_number)[:20]
-    application.application_status = "Selected"
-    application.status = "Selected"
-    application.allocation_status = "allocated"
+        application.application_status = "Published"
+        application.status = "Published"
+    elif application.hostel_id:
+        application.application_status = "Published"
+        application.status = "Published"
     db.commit()
     db.refresh(application)
     student = crud.get_student(db, student_id)

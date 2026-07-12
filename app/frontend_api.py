@@ -73,6 +73,7 @@ class FrontendAllocateHostelRequest(BaseModel):
     hostel_name: str | None = None
     room_id: int | None = None
     room_number: str | None = None
+    bed_number: str | None = None
 
 
 PASSWORD_RESET_TOKEN_EXPIRE_MINUTES = 15
@@ -236,7 +237,9 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
         lowered = status_value.lower()
         if lowered in {"verified", "approved"}:
             verification_status = "verified"
-        if lowered in {"shortlisted", "selected"}:
+        if lowered == "selected":
+            shortlist_status = "selected"
+        elif lowered == "shortlisted":
             shortlist_status = "shortlisted"
     hostel_name = application.hostel.name if application and application.hostel else None
     room_number = application.room.room_number if application and application.room else None
@@ -268,6 +271,7 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
         "allocated_hostel": hostel_name,
         "preferred_hostel": hostel_name,
         "room_number": room_number,
+        "bed_number": application.bed if application else None,
         "application_id": application.id if application else None,
         "payment_status": overall_payment_status,
         "application_payment_status": registration_status,
@@ -1428,9 +1432,17 @@ def frontend_allocate_hostel(
             )
         )
     if room:
+        application.hostel_id = room.hostel_id
         application.room_id = room.id
+        if payload.bed_number:
+            application.bed = clean_text(payload.bed_number)[:20]
+        application.block = room.block
+        application.floor = str(room.floor) if room.floor is not None else None
+    elif payload.bed_number:
+        application.bed = clean_text(payload.bed_number)[:20]
     application.application_status = "Selected"
     application.status = "Selected"
+    application.allocation_status = "allocated"
     db.commit()
     db.refresh(application)
     student = crud.get_student(db, student_id)

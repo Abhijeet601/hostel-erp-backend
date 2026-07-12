@@ -258,9 +258,10 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
         lowered = status_value.lower()
         if lowered in {"verified", "approved"}:
             verification_status = "verified"
-        if lowered in {"room allocated", "room_allocated", "selected"}:
+        has_room_allocation = bool(application.hostel_id and application.room_id and application.bed)
+        if lowered in {"room allocated", "room_allocated"} or (lowered == "selected" and has_room_allocation):
             shortlist_status = "room_allocated"
-        elif lowered == "published":
+        elif lowered in {"published", "selected"}:
             shortlist_status = "published"
         elif lowered == "shortlisted":
             shortlist_status = "shortlisted"
@@ -1626,7 +1627,7 @@ def frontend_publish_merit(
     for application in crud.list_applications(db):
         current = (application.application_status or "").lower()
         if current in {"shortlisted", "published", "selected", "room allocated"}:
-            if application.room_id and application.bed:
+            if application.hostel_id and application.room_id and application.bed:
                 application.application_status = "Room Allocated"
                 application.status = "Room Allocated"
                 application.allocation_status = "allocated"

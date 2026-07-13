@@ -649,7 +649,7 @@ def create_room(payload: schemas.RoomCreate, db: Session = Depends(get_db)):
 
 @app.get("/rooms", response_model=list[schemas.RoomRead])
 def list_rooms(hostel_id: int | None = None, db: Session = Depends(get_db)):
-    return crud.list_rooms(db, hostel_id=hostel_id)
+    return crud.list_rooms(db, hostel_id=hostel_id, sync=True)
 
 
 @app.get("/rooms/{room_id}/beds")

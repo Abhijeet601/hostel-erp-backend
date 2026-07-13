@@ -950,10 +950,15 @@ def list_admin_rooms(db: Session) -> dict[str, list[dict[str, Any]]]:
         items.append(
             {
                 "id": room.id,
+                "hostel_id": room.hostel_id,
                 "hostel_name": hostel.name if hostel else "",
                 "room_number": room.room_number,
+                "floor": room.floor,
+                "building": room.building,
+                "beds": room.beds,
                 "block_name": str(room.floor),
                 "bed_capacity": room.beds,
+                "occupied_beds": occupied,
                 "available_beds": available_beds,
                 "occupied_bed_numbers": occupied_bed_numbers,
                 "available_bed_numbers": available_bed_numbers,

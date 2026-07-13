@@ -1182,9 +1182,18 @@ async def save_or_submit_application(
 
     raw_data = map_frontend_fields(await read_request_data(request))
     current_step = int(raw_data.get("current_step") or 8)
-    existing_draft = crud.get_editable_student_application(db, student.id)
+    existing_application = crud.get_latest_student_application(db, student.id)
+    existing_status = str(
+        (existing_application.application_status or existing_application.status) if existing_application else ""
+    ).lower()
+    if existing_application and existing_status != "draft":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Application has already been submitted. Student-side editing is disabled. Contact admin for changes.",
+        )
+    existing_draft = existing_application
     if submit:
-        application = existing_draft or crud.get_latest_student_application(db, student.id)
+        application = existing_draft
         if not application:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No draft application found to submit.")
         require_admission_open(db, existing_draft=True)

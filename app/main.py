@@ -812,8 +812,14 @@ def save_application_draft(
     student = crud.get_student(db, payload.student_id)
     if not student:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found.")
-    existing_draft = crud.get_editable_student_application(db, student.id)
     existing_latest = crud.get_latest_student_application(db, student.id)
+    latest_status = str((existing_latest.application_status or existing_latest.status) if existing_latest else "").lower()
+    if existing_latest and latest_status != "draft":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Application has already been submitted. Student-side editing is disabled. Contact admin for changes.",
+        )
+    existing_draft = existing_latest
     require_admission_open(db, existing_draft=bool(existing_draft))
     data = normalize_application_data(payload.data)
     validate_step_payload(payload.current_step, data)
@@ -869,6 +875,12 @@ def submit_application(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
     if application.student_id != payload.student_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Application does not belong to this student.")
+    application_status = str(application.application_status or application.status or "").lower()
+    if application_status != "draft":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Application has already been submitted. Student-side editing is disabled. Contact admin for changes.",
+        )
     require_admission_open(db, existing_draft=True)
     data = normalize_application_data(payload.data)
     merged = {field: getattr(application, field, None) for field in crud.APPLICATION_DRAFT_FIELDS}

@@ -762,13 +762,16 @@ def build_admin_dashboard(db: Session) -> dict[str, Any]:
     applications = crud.list_applications(db)
     payments = crud.list_payments(db)
     rooms = crud.list_rooms(db)
-    occupied_room_ids = {
-        application.room_id
+    total_beds = sum(max(int(room.beds or 0), 0) for room in rooms)
+    allocated_beds = {
+        (application.room_id, str(application.bed or "").strip().upper())
         for application in applications
-        if application.room_id and (application.application_status or "").lower() in {"selected", "approved", "shortlisted"}
+        if application.room_id
+        and application.bed
+        and (application.allocation_status or "").lower() != "vacated"
+        and (application.application_status or "").lower() != "draft"
     }
-    total_beds = sum(room.beds for room in rooms)
-    occupied_beds = sum(room.beds for room in rooms if room.id in occupied_room_ids or room.status == "occupied")
+    occupied_beds = max(sum(max(int(room.occupied_beds or 0), 0) for room in rooms), len(allocated_beds))
     application_revenue = sum(
         payment.amount
         for payment in payments
@@ -796,10 +799,10 @@ def build_admin_dashboard(db: Session) -> dict[str, Any]:
             verified_students += 1
         if status_value in {"shortlisted", "selected"}:
             shortlisted_students += 1
-        if status_value in {"submitted", "pending", "draft"}:
+        if status_value in {"submitted", "pending"}:
             pending_applications += 1
     return {
-        "total_applications": len(applications),
+        "total_applications": sum(1 for application in applications if (application.application_status or "").lower() != "draft"),
         "verified_students": verified_students,
         "shortlisted_students": shortlisted_students,
         "pending_applications": pending_applications,

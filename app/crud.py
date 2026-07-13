@@ -578,6 +578,7 @@ def assign_application_bed(
     room = db.get(models.Room, room_id)
     if not room:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
+    sync_room_occupancy(db, room)
     if hostel_id is not None and int(hostel_id) != int(room.hostel_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected room does not belong to the chosen hostel.")
     normalized_bed = normalize_bed_value(bed)

@@ -682,6 +682,7 @@ def get_room_bed_inventory(room_id: int, db: Session = Depends(get_db)):
                 "bed_number": f"{room.room_number} - {bed}",
                 "status": "occupied" if application else "available",
                 "student_name": student.name if student else None,
+                "student_db_id": student.id if student else None,
                 "student_id": student.student_code if student else None,
                 "registration_number": student.student_code if student else None,
                 "application_id": application.id if application else None,

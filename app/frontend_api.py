@@ -362,7 +362,7 @@ def normalize_payment_state(value: str | None) -> str:
     text = (value or "").strip().lower()
     if text in {"paid", "success", "successful", "completed", "captured"}:
         return "paid"
-    if text in {"failed", "failure", "declined", "cancelled", "canceled", "aborted"}:
+    if text in {"failed", "failure", "declined", "aborted"}:
         return "failed"
     if text in {"refunded", "refund"}:
         return "refunded"
@@ -417,7 +417,7 @@ def payment_type_key(value: str | None) -> str:
 
 
 def receipt_type_key(value: str | None) -> str:
-    return "hostel" if value == "hostel_admission" else "registration"
+    return "hostel" if str(value or "").startswith("hostel_admission") else "registration"
 
 
 def serialize_admin_payment(payment: models.Payment) -> dict[str, Any]:
@@ -461,10 +461,15 @@ def serialize_admin_receipt_only(receipt: models.PaymentReceipt) -> dict[str, An
     payment = receipt.payment
     student = receipt.student or (payment.student if payment else None)
     application = payment.application if payment else None
+    receipt_state = normalize_payment_state(payment.status if payment else None)
+    if not payment and receipt.receipt_type in {"application_registration", "hostel_admission"}:
+        receipt_state = "paid"
+    if str(receipt.receipt_type or "").endswith("_cancelled"):
+        receipt_state = "pending"
     payment_type = (
         payment.payment_type
         if payment and payment.payment_type
-        else ("Hostel Admission Fee" if receipt.receipt_type == "hostel_admission" else "Registration Fee")
+        else ("Hostel Admission Fee" if receipt_type_key(receipt.receipt_type) == "hostel" else "Registration Fee")
     )
     payment_date = payment.paid_at if payment and payment.paid_at else receipt.generated_at
     return {
@@ -490,8 +495,8 @@ def serialize_admin_receipt_only(receipt: models.PaymentReceipt) -> dict[str, An
         "failure_reason": payment.failure_reason if payment else None,
         "amount": receipt.amount,
         "mode": payment.mode if payment else None,
-        "status": payment.status if payment and payment.status else "Generated",
-        "status_key": "paid",
+        "status": payment.status if payment and payment.status else ("Generated" if receipt_state == "paid" else "Pending"),
+        "status_key": receipt_state,
         "payment_date": payment_date,
         "created_at": receipt.generated_at,
     }

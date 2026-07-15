@@ -79,6 +79,7 @@ class FrontendAllocateHostelRequest(BaseModel):
 class FrontendBulkShortlistRequest(BaseModel):
     student_ids: list[int] = Field(default_factory=list)
     allotted_category: str | None = None
+    hostel_name: str | None = None
 
 
 class FrontendRoomAllocationRow(BaseModel):
@@ -1568,6 +1569,11 @@ def frontend_bulk_shortlist_students(
     student_ids = sorted({int(student_id) for student_id in payload.student_ids if student_id})
     if not student_ids:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Select at least one student.")
+    hostel = None
+    if payload.hostel_name:
+        hostel = db.scalar(select(models.Hostel).where(models.Hostel.name == payload.hostel_name))
+        if not hostel:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hostel not found.")
     updated = 0
     failed: list[dict[str, Any]] = []
     for student_id in student_ids:
@@ -1577,6 +1583,8 @@ def frontend_bulk_shortlist_students(
             continue
         if payload.allotted_category:
             application.allotted_category = clean_text(payload.allotted_category)[:20]
+        if hostel:
+            application.hostel_id = hostel.id
         application.application_status = "Shortlisted"
         application.status = "Shortlisted"
         application.allocation_status = application.allocation_status or "pending"

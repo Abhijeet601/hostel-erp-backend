@@ -1058,10 +1058,11 @@ def expected_registration_fee(application: models.HostelApplication) -> Decimal:
 
 
 def expected_hostel_fee(application: models.HostelApplication) -> Decimal:
-    if application.status.lower() not in {"selected", "shortlisted", "approved"}:
+    application_state = (application.application_status or application.status or "").lower()
+    if application_state not in {"selected", "shortlisted", "approved", "published", "room allocated", "room_allocated"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Hostel fee requires a shortlisted or approved application.",
+            detail="Hostel fee requires a shortlisted, published, or approved application.",
         )
     if not application.hostel:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A hostel must be allotted first.")
@@ -1426,7 +1427,8 @@ def generate_receipt(payload: schemas.ReceiptGenerateRequest, db: Session = Depe
     receipt_type = payload.receipt_type or receipt_service.infer_receipt_type(payment)
     if receipt_type == "hostel_admission":
         application = payment.application
-        if not application or application.status.lower() not in {"selected", "shortlisted", "approved"}:
+        application_state = (application.application_status or application.status or "").lower() if application else ""
+        if not application or application_state not in {"selected", "shortlisted", "approved", "published", "room allocated", "room_allocated"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Application is not shortlisted.")
     return receipt_service.generate_receipt_pdf(db, payment, receipt_type)
 

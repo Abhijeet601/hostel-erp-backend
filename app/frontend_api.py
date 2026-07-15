@@ -297,7 +297,17 @@ def serialize_admin_student(student: models.Student, application: models.HostelA
         "preferred_hostel": hostel_name,
         "room_number": room_number,
         "bed_number": application.bed if application else None,
+        "block": application.block if application else None,
+        "floor": (
+            application.floor
+            if application and application.floor
+            else str(application.room.floor) if application and application.room else None
+        ),
+        "room_building": application.room.building if application and application.room else None,
+        "allocation_date": application.allocation_date if application else None,
+        "allocation_status": application.allocation_status if application else None,
         "application_id": application.id if application else None,
+        "hostel_application_number": application.application_no if application else None,
         "payment_status": overall_payment_status,
         "application_payment_status": registration_status,
         "registration_payment_status": registration_status,

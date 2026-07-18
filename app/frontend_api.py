@@ -1783,6 +1783,43 @@ def frontend_allocate_hostel(
     return serialize_admin_student(student, application) if student else {"status": "ok"}
 
 
+@router.post("/admin/students/{student_id}/vacate-room")
+@router.post("/api/admin/students/{student_id}/vacate-room")
+def frontend_vacate_student_room(
+    student_id: int,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    require_write_admin(authorization, db)
+    application = crud.get_latest_student_application(db, student_id)
+    if not application:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
+    if not application.room_id or not application.bed or (application.allocation_status or "").lower() == "vacated":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Student does not have an active room allocation.")
+
+    old_room = crud.get_room(db, application.room_id)
+    application.room_id = None
+    application.bed = None
+    application.block = None
+    application.floor = None
+    application.allocation_date = None
+    application.allocation_status = "vacated"
+    application.application_status = "Published" if application.hostel_id else "Shortlisted"
+    application.status = application.application_status
+    db.add(application)
+    db.flush()
+    if old_room:
+        crud.sync_room_occupancy(db, old_room)
+        db.add(old_room)
+    db.commit()
+    db.refresh(application)
+    student = crud.get_student(db, student_id)
+    return {
+        "message": "Room vacated successfully.",
+        "student": serialize_admin_student(student, application) if student else None,
+    }
+
+
 @router.post("/admin/students/{student_id}/account", response_model=schemas.AccountActionResponse)
 @router.post("/api/admin/students/{student_id}/account", response_model=schemas.AccountActionResponse)
 @router.patch("/admin/students/{student_id}/account", response_model=schemas.AccountActionResponse)

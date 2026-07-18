@@ -2,7 +2,7 @@ import hashlib
 import json
 import logging
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from threading import Lock
@@ -1220,6 +1220,11 @@ def initiate_payment(payload: schemas.PaymentInitiateRequest, db: Session = Depe
         initiation_lock = payment_initiation_locks.setdefault(lock_key, Lock())
     with initiation_lock:
         payment = crud.get_pending_payment_for_application(db, application.id, payment_type)
+        if payment and payment.created_at and payment.created_at < datetime.now() - timedelta(minutes=30):
+            payment.status = "Cancelled"
+            payment.failure_reason = "Expired payment session replaced by a new payment request."
+            db.commit()
+            payment = None
         if not payment:
             order_id = f"MMC{datetime.now().strftime('%Y%m%d%H%M%S%f')}{application.id}"[:50]
             payment_payload = schemas.PaymentCreate(

@@ -15,7 +15,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import select, text
 from sqlalchemy.exc import DataError, IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app import crud, models, receipt_service, schemas
 from app.config import get_settings
@@ -657,10 +657,11 @@ def get_room_bed_inventory(room_id: int, db: Session = Depends(get_db)):
     room = crud.get_room(db, room_id)
     if not room:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
-    crud.sync_room_occupancy(db, room)
     occupied_applications = list(
         db.scalars(
-            select(models.HostelApplication).where(
+            select(models.HostelApplication)
+            .options(joinedload(models.HostelApplication.student))
+            .where(
                 models.HostelApplication.room_id == room.id,
                 models.HostelApplication.allocation_status != "vacated",
                 models.HostelApplication.bed.is_not(None),

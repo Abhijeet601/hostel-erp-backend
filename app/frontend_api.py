@@ -774,9 +774,19 @@ def build_student_dashboard(student: models.Student, db: Session) -> dict[str, A
 
 
 def build_admin_dashboard(db: Session) -> dict[str, Any]:
-    students = crud.list_students(db, limit=5000)
-    applications = crud.list_applications(db)
-    payments = crud.list_payments(db)
+    applications = db.execute(
+        select(
+            models.HostelApplication.application_status,
+            models.HostelApplication.applied_category,
+            models.HostelApplication.course,
+            models.HostelApplication.room_id,
+            models.HostelApplication.bed,
+            models.HostelApplication.allocation_status,
+        )
+    ).all()
+    payments = db.execute(
+        select(models.Payment.payment_type, models.Payment.status, models.Payment.amount)
+    ).all()
     rooms = crud.list_rooms(db)
     total_beds = sum(max(int(room.beds or 0), 0) for room in rooms)
     allocated_beds = {
@@ -938,31 +948,24 @@ def validate_manual_payment(db: Session, application: models.HostelApplication, 
 
 def list_admin_rooms(db: Session) -> dict[str, list[dict[str, Any]]]:
     rooms = crud.list_rooms(db)
-    applications = crud.list_applications(db)
-    occupied_counts: dict[int, int] = {}
-    for application in applications:
-        if (
-            application.room_id
-            and application.bed
-            and (application.allocation_status or "") != "vacated"
-            and (application.application_status or "") != "Draft"
-        ):
-            occupied_counts[application.room_id] = occupied_counts.get(application.room_id, 0) + 1
+    occupied_rows = db.execute(
+        select(models.HostelApplication.room_id, models.HostelApplication.bed).where(
+            models.HostelApplication.room_id.is_not(None),
+            models.HostelApplication.bed.is_not(None),
+            models.HostelApplication.allocation_status != "vacated",
+            models.HostelApplication.application_status != "Draft",
+        )
+    ).all()
+    occupied_by_room: dict[int, set[str]] = {}
+    for room_id, bed in occupied_rows:
+        occupied_by_room.setdefault(int(room_id), set()).add(crud.normalize_bed_value(bed))
     items = []
     for room in rooms:
         hostel = room.hostel
-        occupied_applications = [
-            application
-            for application in applications
-            if application.room_id == room.id
-            and (application.allocation_status or "") != "vacated"
-            and (application.application_status or "") != "Draft"
-            and application.bed
-        ]
-        occupied_bed_numbers = sorted({crud.normalize_bed_value(application.bed) for application in occupied_applications if application.bed})
+        occupied_bed_numbers = sorted(occupied_by_room.get(room.id, set()))
         bed_labels = ["A", "B", "C"][: max(int(room.beds or 0), 0)]
         available_bed_numbers = [bed for bed in bed_labels if bed not in occupied_bed_numbers]
-        occupied = occupied_counts.get(room.id, 0)
+        occupied = len(occupied_bed_numbers)
         if room.status == "occupied" and occupied == 0:
             occupied = room.beds
         available_beds = len(available_bed_numbers)

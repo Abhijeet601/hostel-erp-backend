@@ -181,28 +181,9 @@ def list_active_students_with_latest_applications(
         )
     )
     if applications:
-        document_rows = db.execute(
-            select(
-                models.HostelApplication.id,
-                (func.length(models.HostelApplication.student_photo_data) > 0).label("student_photo_data"),
-                (func.length(models.HostelApplication.aadhar_card_data) > 0).label("aadhar_card_data"),
-                (func.length(models.HostelApplication.admission_receipt_data) > 0).label("admission_receipt_data"),
-                (func.length(models.HostelApplication.income_certificate_data) > 0).label("income_certificate_data"),
-                (func.length(models.HostelApplication.caste_certificate_data) > 0).label("caste_certificate_data"),
-            ).where(models.HostelApplication.id.in_([application.id for application in applications]))
-        ).all()
-        flags_by_application = {
-            row.id: {
-                "student_photo_data": bool(row.student_photo_data),
-                "aadhar_card_data": bool(row.aadhar_card_data),
-                "admission_receipt_data": bool(row.admission_receipt_data),
-                "income_certificate_data": bool(row.income_certificate_data),
-                "caste_certificate_data": bool(row.caste_certificate_data),
-            }
-            for row in document_rows
-        }
         for application in applications:
-            application._document_flags = flags_by_application.get(application.id, {})
+            # Full document data is fetched by the dedicated student-documents endpoint.
+            application._document_flags = {}
     latest_by_student: dict[int, models.HostelApplication] = {}
     for application in applications:
         latest_by_student.setdefault(application.student_id, application)
@@ -308,10 +289,28 @@ def list_rooms(db: Session, hostel_id: int | None = None, sync: bool = False) ->
     if hostel_id:
         stmt = stmt.where(models.Room.hostel_id == hostel_id)
     rooms = list(db.scalars(stmt))
-    if sync:
+    if sync and rooms:
+        room_ids = [room.id for room in rooms]
+        occupancy_rows = db.execute(
+            select(
+                models.HostelApplication.room_id,
+                func.count(models.HostelApplication.id),
+            )
+            .where(
+                models.HostelApplication.room_id.in_(room_ids),
+                models.HostelApplication.allocation_status != "vacated",
+                models.HostelApplication.bed.is_not(None),
+                models.HostelApplication.application_status != "Draft",
+            )
+            .group_by(models.HostelApplication.room_id)
+        ).all()
+        occupied_by_room = {int(room_id): int(count) for room_id, count in occupancy_rows if room_id is not None}
         for room in rooms:
-            sync_room_occupancy(db, room)
-        db.commit()
+            total_beds = max(int(room.beds or 0), 0)
+            room.occupied_beds = min(occupied_by_room.get(room.id, 0), total_beds)
+            room.available_beds = max(total_beds - room.occupied_beds, 0)
+            if room.status not in {"reserved", "maintenance"}:
+                room.status = "occupied" if total_beds > 0 and room.occupied_beds >= total_beds else "available"
     return rooms
 
 
@@ -340,16 +339,14 @@ def sync_room_occupancy(db: Session, room: models.Room) -> models.Room:
     if not room:
         return room
     total_beds = max(int(room.beds or 0), 0)
-    occupied_rows = db.execute(
-        select(models.HostelApplication)
-        .where(
+    occupied_beds = db.scalar(
+        select(func.count(models.HostelApplication.id)).where(
             models.HostelApplication.room_id == room.id,
             models.HostelApplication.allocation_status != "vacated",
             models.HostelApplication.bed.is_not(None),
             models.HostelApplication.application_status != "Draft",
         )
-    ).scalars().all()
-    occupied_beds = len(occupied_rows)
+    ) or 0
     room.occupied_beds = min(occupied_beds, total_beds)
     room.available_beds = max(total_beds - room.occupied_beds, 0)
     if room.status not in {"reserved", "maintenance"}:

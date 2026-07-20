@@ -917,6 +917,27 @@ def list_applications(
     return crud.list_applications(db, status=status_filter, student_id=student_id)
 
 
+@app.get("/students/{student_id}/photo-url")
+def get_student_photo_url(
+    student_id: int,
+    authorization: str | None = Header(None),
+    token: str | None = None,
+    db: Session = Depends(get_db),
+):
+    authorized_receipt_student_id(db, student_id, authorization, token)
+    application = crud.get_latest_student_application(db, student_id)
+    photo_url = application.student_photo_data if application else None
+    if not photo_url:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student photo not found.")
+    if not photo_url.startswith("http"):
+        return {"photo_url": photo_url}
+    r2 = get_r2_service()
+    if not r2.enabled:
+        return {"photo_url": photo_url}
+    key = r2.key_from_public_url(photo_url)
+    return {"photo_url": r2.generate_presigned_url(key, expires_in=604800)}
+
+
 @app.get("/applications/{application_id}", response_model=schemas.ApplicationRead)
 def get_application(
     application_id: int,
